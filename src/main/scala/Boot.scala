@@ -55,7 +55,7 @@ object utils extends LazyLogging  {
     adapter.loadXML(source, parser)
   }
 
-  def audioRecorder(station_prefix: String, url: String, destination_folder: String)(article: Article) = Try {
+  def audioRecorder(station_prefix: String, url: String, destination_folder: String, padding: Int)(article: Article) = Try {
     val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
     val filename = s"${station_prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
     val fullFileName = s"""$destination_folder\\$filename.mp3"""
@@ -63,8 +63,9 @@ object utils extends LazyLogging  {
     val cmd = s""""${utils.vlc}" $url --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
     logger.info(cmd)
     val process = cmd.run
-    Thread.sleep(1000*Seconds.secondsBetween(DateTime.now, article.end).getSeconds)
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+padding*60))
     process.destroy()
+    logger.info(s"$fullFileName COMPLETED")
 
     // fix mp3 tag, https://github.com/soc/jaudiotagger
     import org.jaudiotagger.audio.AudioFileIO
@@ -103,23 +104,22 @@ case class Article(start: DateTime, end: DateTime, title: String, details: Optio
 
 }
 
-abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[Unit]) {
+abstract class Station(val name: String, cycleHours: Int, recorder: Article => Try[Unit]) {
   def programa: List[Article]
 
   def getSubscriptions = {
     val picker_reg = """([^ ]*) (.*)""".r
     val timeslot_reg = """(.*) TimeSlot (\d) (\d\d):(\d\d) (\d\d):(\d\d) (.*)""".r
     val subscriptions = scala.io.Source.fromFile(utils.config.getString("subscriptions")).getLines().toList.filter(it => it != "" && it(0)!="#")
-    subscriptions.foldLeft(List.empty[String], List.empty[Article]){ (acc,it) =>
-      it match {
-        case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
-          val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
-          val nextDay = now.plusDays((day.toInt-now.dayOfWeek().get()+7)%7)
-          (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, None) :: acc._2)
-        case picker_reg(station,words) if (station == name) =>
-          (words :: acc._1, acc._2)
-        case _ => (acc._1, acc._2)
-      }}
+    subscriptions.foldLeft(List.empty[String], List.empty[Article]){ (acc,it) => it match {
+      case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
+        val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
+        val nextDay = now.plusDays((day.toInt-now.dayOfWeek().get()+7)%7)
+        (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, None) :: acc._2)
+      case picker_reg(station,words) if (station == name) =>
+        (words :: acc._1, acc._2)
+      case _ => (acc._1, acc._2)
+    }}
   }
 
   def pick(start: DateTime, end: DateTime) = {
@@ -134,7 +134,7 @@ abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[U
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusHours(cycleHours)
           pick(start,end).foreach { article => {
-            println(s"scheduled $article")
+            utils.logger.info(s"scheduled $name $article")
             utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
           }}
           Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
@@ -215,7 +215,15 @@ object Boot {
   }
 
   import utils.config
-  object HristoBotev extends Station(utils.config.getString("stations.HristoBotev.name"), utils.config.getInt("stations.HristoBotev.cycleHours"), utils.audioRecorder(config.getString("stations.HristoBotev.prefix"), config.getString("stations.HristoBotev.url"), config.getString("stations.HristoBotev.destination"))) {
+  object HristoBotev extends Station(
+    utils.config.getString("stations.HristoBotev.name"),
+    utils.config.getInt("stations.HristoBotev.cycleHours"),
+    utils.audioRecorder(
+      config.getString("stations.HristoBotev.prefix"),
+      config.getString("stations.HristoBotev.url"),
+      config.getString("stations.HristoBotev.destination"),
+      config.getInt("stations.HristoBotev.padding"))
+  ) {
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(weeklyDoc)
@@ -225,25 +233,26 @@ object Boot {
     }
   }
 
-  object Horizont extends Station(utils.config.getString("stations.Horizont.name"), utils.config.getInt("stations.Horizont.cycleHours"), utils.audioRecorder(config.getString("stations.Horizont.prefix"), config.getString("stations.Horizont.url"), config.getString("stations.Horizont.destination"))) {
+  object Horizont extends Station(
+    utils.config.getString("stations.Horizont.name"),
+    utils.config.getInt("stations.Horizont.cycleHours"),
+    utils.audioRecorder(
+      config.getString("stations.Horizont.prefix"),
+      config.getString("stations.Horizont.url"),
+      config.getString("stations.Horizont.destination"),
+      config.getInt("stations.Horizont.padding"))
+  ) {
     def programa = {
       bnr_sedmichna_programa(utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
     }
   }
 
-  val stations = Vector(Horizont, HristoBotev)
-
   def main(args: Array[String]) = {
-    utils.logger.info("Бургас Test")
-    HristoBotev.go
-    Horizont.go
-/*
-    val active_stations = utils.config.getString("active_stations").split(",")
-    stations.filter{st => active_stations.exists(_ == st.name)}.foreach{st => {
-      utils.logger.info(s"${st.name} launched")
-      st.go
-    }}
-*/
+    for (
+      selected <- utils.config.getString("active_stations").split(",");
+      station <- Vector(Horizont, HristoBotev)
+      if (station.name == selected)
+    ) station.go
   }
 
 }
