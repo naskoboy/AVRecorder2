@@ -1,8 +1,10 @@
 import java.io.File
-import java.util.{TimerTask, Timer}
+import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
+import com.typesafe.scalalogging.{Logger, LazyLogging}
 import org.joda.time.format.DateTimeFormat
 import org.joda.time.{Seconds, Minutes, DateTimeZone, DateTime}
+import org.slf4j.LoggerFactory
 import scala.util.Try
 import scala.xml.Node
 
@@ -10,30 +12,19 @@ import scala.xml.Node
  * Created by nasko on 11/20/2015.
  */
 
-object utils {
+object utils extends LazyLogging  {
 
-  val time_reg = ".\u0442 (\\d{1,2}).(\\d\\d) \u0434. (\\d{1,2}).(\\d\\d) \u0447\u0430\u0441\u0430".r // от (\d{1,2}).(\d\d) до (\d{1,2}).(\d\d) часа
+  override lazy val logger = Logger(LoggerFactory.getLogger(""))
+  val scheduler = Executors.newScheduledThreadPool(5)
+  val time_reg = ".т (\\d{1,2}).(\\d\\d) д. (\\d{1,2}).(\\d\\d) часа".r
   val day_reg = "(.*), (\\d{1,2}) (.*)".r
   val day_reg_long = """(\d{1,2}) (.*) (\d\d\d\d), (.*)""".r
   val time_hh_mm = """(\d\d):(\d\d)""".r
   val timeslot_reg = """(\d\d):(\d\d) (\d\d):(\d\d) (.*)""".r
 
   // https://www.branah.com/unicode-converter
-  val months = Seq(
-    """\u044f\u043d\u0443\u0430\u0440\u0438""",
-    """\u0444\u0435\u0432\u0440\u0443\u0430\u0440\u0438""",
-    """\u043c\u0430\u0440\u0442""",
-    """\u0430\u043f\u0440\u0438\u043b""",
-    """\u043c\u0430\u0439""",
-    """\u044e\u043d\u0438""",
-    """\u044e\u043b\u0438""",
-    """\u0430\u0432\u0433\u0443\u0441\u0442""",
-    """\u0441\u0435\u043f\u0442\u0435\u043c\u0432\u0440\u0438""",
-    """\u043e\u043a\u0442\u043e\u043c\u0432\u0440\u0438""",
-    """\u043d\u043e\u0435\u043c\u0432\u0440\u0438""",
-    """\u0434\u0435\u043a\u0435\u043c\u0432\u0440\u0438"""
-  )
-  val published_reg = "\u043f\u0443\u0431\u043b\u0438\u043a\u0443\u0432\u0430\u043d\u043e \u043d\u0430 (\\d\\d).(\\d\\d).(\\d\\d)(.*)".r
+  val months = Vector("януари","февруари","март","април","май","юни","юли","август","септември","октомври","ноември","декември")
+  val published_reg = "публикувано на (\\d\\d).(\\d\\d).(\\d\\d)(.*)".r
   val ymdHM_format = DateTimeFormat.forPattern("yyyy-MM-dd HH:mm")
   val HM_format = DateTimeFormat.forPattern("HH:mm")
 
@@ -70,6 +61,7 @@ object utils {
     val fullFileName = s"""$destination_folder\\$filename.mp3"""
     import sys.process._
     val cmd = s""""${utils.vlc}" $url --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
+    logger.info(cmd)
     val process = cmd.run
     Thread.sleep(1000*Seconds.secondsBetween(DateTime.now, article.end).getSeconds)
     process.destroy()
@@ -117,7 +109,7 @@ abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[U
   def getSubscriptions = {
     val picker_reg = """([^ ]*) (.*)""".r
     val timeslot_reg = """(.*) TimeSlot (\d) (\d\d):(\d\d) (\d\d):(\d\d) (.*)""".r
-    val subscriptions = scala.io.Source.fromFile(utils.config.getString("subscriptions")).getLines().toList
+    val subscriptions = scala.io.Source.fromFile(utils.config.getString("subscriptions")).getLines().toList.filter(it => it != "" && it(0)!="#")
     subscriptions.foldLeft(List.empty[String], List.empty[Article]){ (acc,it) =>
       it match {
         case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
@@ -126,6 +118,7 @@ abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[U
           (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, None) :: acc._2)
         case picker_reg(station,words) if (station == name) =>
           (words :: acc._1, acc._2)
+        case _ => (acc._1, acc._2)
       }}
   }
 
@@ -141,11 +134,9 @@ abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[U
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusHours(cycleHours)
           pick(start,end).foreach { article => {
-            println(article)
-            new Timer().schedule(
-              new TimerTask { override def run(): Unit = recorder(article)},
-              article.start.toDate
-            )}}
+            println(s"scheduled $article")
+            utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+          }}
           Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
         }
       }
@@ -156,28 +147,6 @@ abstract class Station(name: String, cycleHours: Int, recorder: Article => Try[U
 
 
 object Boot {
-
-  /*
-      def getPID(appName:String, filename:String) = scala.io.Source.fromInputStream(Runtime.getRuntime()
-        .exec("wmic PROCESS WHERE \"Caption='" + appName + "' AND CommandLine like '%" + filename + "%'\" GET ProcessId /FORMAT:list")
-        .getInputStream).getLines.filter(it => it.indexOf("ProcessId")>=0).next.substring(10)
-
-      def toCommand(cmd: Seq[String]) = cmd.map(it => if (it.indexOf(" ") >=0) s""""$it"""" else it).mkString(" ")
-
-      def executeCommand(cmd: String) = {
-        import sys.process._
-        val stdout = new StringBuilder
-        val stderr = new StringBuilder
-        val status = Process(cmd) ! ProcessLogger(it => { stdout append (it+"\n") }, it => { stderr append (it+"\n")})
-        (status, stderr.toString(), stdout.toString())
-      }
-
-      def executeShellCommand(cmd: String) = executeCommand(s"cmd /K $cmd")
-  */
-
-  // https://github.com/chris-twiner/scalesXml
-  // http://anti-xml.org/
-  // https://github.com/mpatric/mp3agic
 
   def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
@@ -246,7 +215,7 @@ object Boot {
   }
 
   import utils.config
-  object HristoBotev extends Station("HristoBotev", utils.config.getInt("stations.HristoBotev.cycleHours"), utils.audioRecorder(config.getString("stations.HristoBotev.prefix"), config.getString("stations.HristoBotev.url"), config.getString("stations.HristoBotev.destination"))) {
+  object HristoBotev extends Station(utils.config.getString("stations.HristoBotev.name"), utils.config.getInt("stations.HristoBotev.cycleHours"), utils.audioRecorder(config.getString("stations.HristoBotev.prefix"), config.getString("stations.HristoBotev.url"), config.getString("stations.HristoBotev.destination"))) {
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(weeklyDoc)
@@ -256,23 +225,25 @@ object Boot {
     }
   }
 
-  object Horizont extends Station("Horizont", utils.config.getInt("stations.Horizont.cycleHours"), utils.audioRecorder(config.getString("stations.Horizont.prefix"), config.getString("stations.Horizont.url"), config.getString("stations.Horizont.destination"))) {
+  object Horizont extends Station(utils.config.getString("stations.Horizont.name"), utils.config.getInt("stations.Horizont.cycleHours"), utils.audioRecorder(config.getString("stations.Horizont.prefix"), config.getString("stations.Horizont.url"), config.getString("stations.Horizont.destination"))) {
     def programa = {
       bnr_sedmichna_programa(utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
     }
   }
 
+  val stations = Vector(Horizont, HristoBotev)
+
   def main(args: Array[String]) = {
+    utils.logger.info("Бургас Test")
     HristoBotev.go
-
-    //val dailyProgram = hb_izbrano("""http://bnr.bg/hristobotev/post/100628587""")
-    //val articles = hb_izbrano("""http://bnr.bg/hristobotev/post/100628497""")
-    //val articles = hb_izbrano("""http://bnr.bg/hristobotev/post/100627160""")
-
-    // val hb = bnr_sedmichna_programa("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
-    // val hr = bnr_sedmichna_programa("""http://bnr.bg/horizont/page/programna-shema""")
-
-    //println(dailyProgram)
+    Horizont.go
+/*
+    val active_stations = utils.config.getString("active_stations").split(",")
+    stations.filter{st => active_stations.exists(_ == st.name)}.foreach{st => {
+      utils.logger.info(s"${st.name} launched")
+      st.go
+    }}
+*/
   }
 
 }
