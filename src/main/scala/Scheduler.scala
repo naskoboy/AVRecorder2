@@ -58,7 +58,8 @@ object utils extends LazyLogging  {
     adapter.loadXML(source, parser)
   }
 
-  def audioRecorder(station_prefix: String, url: String, destination_folder: String, padding: Int)(article: Article) = Try {
+  def audioRecorder(station_prefix: String, url: String, destination_folder: String, padding: Int)(station: Station, article: Article) = Try {
+    station.ledger.synchronized{ station.ledger += article->Status.Running}
     val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
     val filename = s"${station_prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
     val fullFileName = s"""$destination_folder\\$filename.mp3"""
@@ -91,6 +92,8 @@ object utils extends LazyLogging  {
     val file = AudioFileIO.read(new File(fullFileName))
     file.setTag(tag)
     file.commit
+    station.ledger.synchronized{ station.ledger += article->Status.Completed}
+    ()
   }
 
 }
@@ -116,7 +119,14 @@ case class Article(start: DateTime, end: DateTime, minimalTitle: String, title: 
 
 }
 
-abstract class Station(val name: String, cycleHours: Int, recorder: Article => Try[Unit]) {
+object Status extends Enumeration {
+  //type Status = Value
+  val Registered,Picked,Scheduled,Running,Completed = Value
+}
+
+abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Article) => Try[Unit]) { outer =>
+
+  val ledger = collection.mutable.Map.empty[Article,Status.Value]
   def programa: List[Article]
 
   def getSubscriptions = {
@@ -141,16 +151,32 @@ abstract class Station(val name: String, cycleHours: Int, recorder: Article => T
 
   def schedule(article: Article): Unit = {
     utils.logger.info(s"scheduled $name $article")
-    utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+    utils.scheduler.schedule(new Runnable{ def run() = recorder(outer,article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
   }
 
   def go {
     new Thread {
       override def run: Unit = {
         while(true) {
+          //import Status._
+          val (pickers, timeslots) = getSubscriptions
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusHours(cycleHours)
-          pick(start,end).foreach { schedule }
+          val prog = programa.filter(_.start.isAfter(start))
+          ledger.synchronized {
+            val toberemoved = ledger.filterKeys{ _.start.isAfter(start) }.keys
+            toberemoved.foreach(ledger.remove)
+            (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
+              if (pickers.exists(article.title.indexOf(_) >= 0)) {
+                if (article.start.isAfter(start) && article.start.isBefore(end)) {
+                  schedule(article)
+                  ledger += article->Status.Scheduled
+                }
+                else ledger += article->Status.Picked
+              }
+              else ledger += article->Status.Registered
+            }
+          }
           Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
         }
       }

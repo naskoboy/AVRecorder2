@@ -4,10 +4,10 @@ import akka.actor.{Actor, Props, ActorSystem}
 import akka.event.Logging
 import akka.io.IO
 import akka.routing.RoundRobinPool
-import nasko.avrecorder.{Station, Article, Scheduler, utils}
+import nasko.avrecorder.{Status, Article, Scheduler, utils}
 import org.joda.time.{DateTimeZone, DateTime}
 import spray.can.Http
-import spray.http.StatusCodes
+import spray.http.{MediaTypes, StatusCodes}
 import spray.routing.{HttpService, ExceptionHandler}
 import spray.util.LoggingContext
 
@@ -58,6 +58,33 @@ class ApiActor extends Actor with HttpService {
           }
         }
       } ~
+      path("status") {
+        parameters('station, 'format.?, 'details.?) { (station,format,details) => {
+          val ledger = Scheduler.stations.find(_.name == station).get.ledger
+          val list = ledger.synchronized{ ledger.filterKeys(it => it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortBy(_._1.start.getMillis)}
+          val detailsFlag = details.getOrElse("false").toBoolean
+          if (format.getOrElse("text")=="html") respondWithMediaType(MediaTypes.`text/html`) {
+            complete {
+              list.map{ case (article,status) => s"""<tr style="background-color: ${
+                status match {
+                  case Status.Completed => "LightBlue"
+                  case Status.Running => "yellow"
+                  case Status.Picked => "aqua"
+                  case Status.Scheduled => "orange"
+                  case _ => ""
+                }
+              }"><td>${
+                utils.ymdHM_format.print(article.start)}</td><td>${
+                utils.ymdHM_format.print(article.end)}</td><td>${
+                article.title}</td>${
+                if (detailsFlag) s"<td>${article.details.getOrElse("")}/<td>" else ""
+              }<td>${
+                status
+              }</td></tr>"""}.mkString(s"""<html><body><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+            }
+          } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
+          }}
+      } ~
       path("request") {
         parameters('article) { articleStr =>
           val reg1 = """([^ ]*) (\d{1,2}):(\d\d) (\d{1,2}):(\d\d) (.*)""".r
@@ -75,7 +102,10 @@ class ApiActor extends Actor with HttpService {
               (Scheduler.stations.find(_.name == station), Article(now, now.plusMinutes(duration.toInt), "Requested", title, None))
           }
           complete { station match{
-            case Some(st) => st.schedule(article) ; "Request accepted."
+            case Some(st) =>
+              st.schedule(article)
+              st.ledger.synchronized(st.ledger.synchronized{ st.ledger += article->Status.Scheduled})
+              "Request accepted."
             case None => "Unknown station."
           }}
 
