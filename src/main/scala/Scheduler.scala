@@ -4,6 +4,7 @@ import java.io.File
 import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.{Logger, LazyLogging}
+import nasko.avrecorder.api.ApiBoot
 import org.joda.time.format.DateTimeFormat
 import org.joda.time.{Seconds, Minutes, DateTimeZone, DateTime}
 import org.slf4j.LoggerFactory
@@ -76,8 +77,17 @@ object utils extends LazyLogging  {
     TagOptionSingleton.getInstance.setId3v23DefaultTextEncoding(TextEncoding.getInstanceOf.getIdForValue("UTF-8").byteValue())
 
     val tag = new org.jaudiotagger.tag.id3.ID3v23Tag()
-    tag.addField(FieldKey.TITLE, article.title)
-    article.details.map(tag.addField(FieldKey.COMMENT, _))
+    tag.addField(FieldKey.ALBUM, article.minimalTitle)
+    article.details match {
+      case Some(details) =>
+        if (details.size<=50) { tag.addField(FieldKey.TITLE, details) }
+        else {
+          tag.addField(FieldKey.TITLE, article.title)
+          tag.addField(FieldKey.COMMENT, details)
+        }
+      case None =>
+        tag.addField(FieldKey.TITLE, article.title)
+    }
     val file = AudioFileIO.read(new File(fullFileName))
     file.setTag(tag)
     file.commit
@@ -85,7 +95,7 @@ object utils extends LazyLogging  {
 
 }
 
-case class Article(start: DateTime, end: DateTime, title: String, details: Option[String]) {
+case class Article(start: DateTime, end: DateTime, minimalTitle: String, title: String, details: Option[String]) {
   override def toString() = s"${ utils.ymdHM_format.print(start) } >> ${
     if (start.isBefore(end)) utils.HM_format.print(end) else "???"
   }  $title [${
@@ -117,7 +127,7 @@ abstract class Station(val name: String, cycleHours: Int, recorder: Article => T
       case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
         val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
         val nextDay = now.plusDays((day.toInt-now.dayOfWeek().get()+7)%7)
-        (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, None) :: acc._2)
+        (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, title, None) :: acc._2)
       case picker_reg(station,words) if (station == name) =>
         (words :: acc._1, acc._2)
       case _ => (acc._1, acc._2)
@@ -186,7 +196,7 @@ object Scheduler {
         case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
         case _ => (0,0)
       }
-      Article(datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, Some(details.map(_.text).mkString("\n")))
+      Article(datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
     }
   }
 
@@ -210,9 +220,9 @@ object Scheduler {
         val <div>{_}<div>{time}</div>{item @ _*}</div> = art
         val title = (try item(1) catch { case _ => item(0) }).text.trim
         val utils.time_hh_mm(h,m) = time.text
-        Article(datetime.plusMinutes(h.toInt*60+m.toInt), datetime, title, None)
+        Article(datetime.plusMinutes(h.toInt*60+m.toInt), datetime, title, title, None)
       }
-      (articles.zip(articles.tail ++ List(Article(datetime.plusDays(1),datetime,"",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
+      (articles.zip(articles.tail ++ List(Article(datetime.plusDays(1),datetime,"","",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
     }}
   }
 
@@ -230,7 +240,7 @@ object Scheduler {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(weeklyDoc)
       val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano("http://bnr.bg" + it \ "@href")).sortWith((a,b) => a.start.isBefore(b.start))
-      val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(t1,t2,expandedTitle(it.title,izb.title),izb.details) case None => it } )
+      val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
       enrichedWeeklyProgram
     }
   }
@@ -252,6 +262,7 @@ object Scheduler {
   val stations = Vector(Horizont, HristoBotev)
 
   def main(args: Array[String]) = {
+    ApiBoot.main(Array())
     for (
       selected <- utils.config.getString("active_stations").split(",");
       station <- stations

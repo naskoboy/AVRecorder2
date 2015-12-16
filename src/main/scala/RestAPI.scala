@@ -4,7 +4,6 @@ import akka.actor.{Actor, Props, ActorSystem}
 import akka.event.Logging
 import akka.io.IO
 import akka.routing.RoundRobinPool
-import nasko.avrecorder.Scheduler.HristoBotev
 import nasko.avrecorder.{Scheduler, utils}
 import org.joda.time.{DateTimeZone, DateTime}
 import spray.can.Http
@@ -26,12 +25,10 @@ object ApiBoot extends App {
   // start a new HTTP server on port 8080 with our service actor as the handler
   IO(Http) ! Http.Bind(service, interface = "0.0.0.0", port = utils.config.getInt("port"))
 
-
 }
 
 
 class ApiActor extends Actor with HttpService {
-
   implicit def myExceptionHandler(implicit log: LoggingContext) =
     ExceptionHandler {
       case e: Exception =>
@@ -42,27 +39,31 @@ class ApiActor extends Actor with HttpService {
     }
 
   def actorRefFactory = context
+
   def receive = runRoute(
     pathPrefix("api") {
       path("programa") {
         parameters('station) { station =>
           complete {
-            Scheduler.stations.find(_.name==station).get.programa.mkString("\n")
+            Scheduler.stations.find(_.name == station).get.programa.mkString("\n")
           }
         }
       } ~
       path("picked") {
-        val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
-        val end = start.plusDays(7)
-        complete {
-          HristoBotev.pick(start, end).mkString("\n")
+        parameters('station) { station =>
+          val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
+          val end = start.plusDays(7)
+          complete {
+            Scheduler.stations.find(_.name == station).get.pick(start, end).mkString("\n")
+          }
         }
       } ~
     pathPrefix("api") {
-      path("jsonConnector") {
-        getFromResource("jsonConnector.html")
+      path("hello") {
+        getFromResource("hello.html")
       }
 
     }
   })
+
 }
