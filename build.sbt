@@ -18,7 +18,11 @@ libraryDependencies ++= {
     //"log4j" % "log4j" % "1.2.14",
     "org.scala-lang.modules" % "scala-xml_2.11" % "1.0.5",
     "com.typesafe.scala-logging" %% "scala-logging" % "3.1.0",
-    "org.slf4j" % "slf4j-simple" % "1.7.12"
+    "org.slf4j" % "slf4j-simple" % "1.7.12",
+    "io.spray" % "spray-can_2.11" % sprayVersion,
+    "io.spray" % "spray-routing_2.11" % sprayVersion,
+    "io.spray" % "spray-testkit_2.11" % sprayVersion,
+    "io.spray" % "spray-client_2.11" % sprayVersion
 
     //"org.scala-lang.modules" % "scala-xml_2.11" % "1.0.3"
     //"org.scalatest" % "scalatest_2.11" % "2.2.1" % "test",
