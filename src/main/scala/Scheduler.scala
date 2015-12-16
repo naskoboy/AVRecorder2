@@ -98,7 +98,14 @@ object utils extends LazyLogging  {
 
 }
 
-case class Article(start: DateTime, end: DateTime, minimalTitle: String, title: String, details: Option[String]) {
+case class Article(start: DateTime, end: DateTime, minimalTitle: String, title: String, details: Option[String]) extends Ordered[Article] {
+
+  def compare (that: Article) = {
+    if (this.start == that.start) 0
+    else if (this.start.isAfter(that.start)) 1
+    else -1
+  }
+
   override def toString() = s"${ utils.ymdHM_format.print(start) } >> ${
     if (start.isBefore(end)) utils.HM_format.print(end) else "???"
   }  $title [${

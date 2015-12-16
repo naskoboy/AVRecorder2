@@ -62,6 +62,7 @@ class ApiActor extends Actor with HttpService {
         parameters('station, 'format.?, 'details.?) { (station,format,details) => {
           val ledger = Scheduler.stations.find(_.name == station).get.ledger
           val list = ledger.synchronized{ ledger.filterKeys(it => it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortBy(_._1.start.getMillis)}
+          val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
           val detailsFlag = details.getOrElse("false").toBoolean
           if (format.getOrElse("text")=="html") respondWithMediaType(MediaTypes.`text/html`) {
             complete {
@@ -76,11 +77,12 @@ class ApiActor extends Actor with HttpService {
               }"><td>${
                 utils.ymdHM_format.print(article.start)}</td><td>${
                 utils.ymdHM_format.print(article.end)}</td><td>${
+                (if (article==current) ">>>   " else "") +
                 article.title}</td>${
-                if (detailsFlag) s"<td>${article.details.getOrElse("")}/<td>" else ""
+                if (detailsFlag) s"<td>${article.details.getOrElse("")}</td>" else ""
               }<td>${
                 status
-              }</td></tr>"""}.mkString(s"""<html><body><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td></tr></b>"""}.mkString(s"""<html><body><p>Station time: ${utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))}<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
           } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
