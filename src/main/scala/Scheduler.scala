@@ -1,3 +1,5 @@
+package nasko.avrecorder
+
 import java.io.File
 import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
@@ -146,7 +148,7 @@ abstract class Station(val name: String, cycleHours: Int, recorder: Article => T
 }
 
 
-object Boot {
+object Scheduler {
 
   def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
@@ -247,10 +249,12 @@ object Boot {
     }
   }
 
+  val stations = Vector(Horizont, HristoBotev)
+
   def main(args: Array[String]) = {
     for (
       selected <- utils.config.getString("active_stations").split(",");
-      station <- Vector(Horizont, HristoBotev)
+      station <- stations
       if (station.name == selected)
     ) station.go
   }
