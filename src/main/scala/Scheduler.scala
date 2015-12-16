@@ -139,16 +139,18 @@ abstract class Station(val name: String, cycleHours: Int, recorder: Article => T
     (programa.filter(article => pickers.exists(article.title.indexOf(_) >= 0)) ++ timeslots).filter(it => it.start.isAfter(start) && it.start.isBefore(end))
   }
 
+  def schedule(article: Article): Unit = {
+    utils.logger.info(s"scheduled $name $article")
+    utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+  }
+
   def go {
     new Thread {
       override def run: Unit = {
         while(true) {
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusHours(cycleHours)
-          pick(start,end).foreach { article => {
-            utils.logger.info(s"scheduled $name $article")
-            utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
-          }}
+          pick(start,end).foreach { schedule }
           Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
         }
       }

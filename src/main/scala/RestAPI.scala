@@ -4,7 +4,7 @@ import akka.actor.{Actor, Props, ActorSystem}
 import akka.event.Logging
 import akka.io.IO
 import akka.routing.RoundRobinPool
-import nasko.avrecorder.{Scheduler, utils}
+import nasko.avrecorder.{Station, Article, Scheduler, utils}
 import org.joda.time.{DateTimeZone, DateTime}
 import spray.can.Http
 import spray.http.StatusCodes
@@ -58,12 +58,29 @@ class ApiActor extends Actor with HttpService {
           }
         }
       } ~
-    pathPrefix("api") {
-      path("hello") {
-        getFromResource("hello.html")
-      }
+      path("request") {
+        parameters('article) { articleStr =>
+          val reg1 = """([^ ]*) (\d{1,2}):(\d\d) (\d{1,2}):(\d\d) (.*)""".r
+          val reg2 = """([^ ]*) (\d{1,2}) (.*)""".r
+          val (station, article) =
+          articleStr match {
+            case reg1(station,h1,m1,h2,m2,title) =>
+              val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withTimeAtStartOfDay()
+              var start = today.plusMinutes(h1.toInt*60+m1.toInt)
+              var end   = today.plusMinutes(h2.toInt*60+m2.toInt)
+              if (start.isBeforeNow) { start = start.plusDays(1) ; end = end.plusDays(1) }
+              (Scheduler.stations.find(_.name == station), Article(start, end, title, title, None))
+            case reg2(station,duration,title) =>
+              val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
+              (Scheduler.stations.find(_.name == station), Article(now, now.plusMinutes(duration.toInt), "Requested", title, None))
+          }
+          complete { station match{
+            case Some(st) => st.schedule(article) ; "Request accepted."
+            case None => "Unknown station."
+          }}
 
-    }
+        }
+      }
   })
 
 }
