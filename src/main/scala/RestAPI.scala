@@ -11,6 +11,8 @@ import spray.http.{MediaTypes, StatusCodes}
 import spray.routing.{HttpService, ExceptionHandler}
 import spray.util.LoggingContext
 
+import scala.util.{Failure, Success}
+
 /**
  * Created by nasko on 12/15/2015.
  */
@@ -43,9 +45,9 @@ class ApiActor extends Actor with HttpService {
   def receive = runRoute(
     pathPrefix("api") {
       path("programa") {
-        parameters('station) { station =>
+        parameters('station) { stationStr =>
           complete {
-            Scheduler.stations(station).programa.mkString("\n")
+            Scheduler.stations(stationStr).programa.mkString("\n")
           }
         }
       } ~
@@ -60,7 +62,7 @@ class ApiActor extends Actor with HttpService {
       } ~
       path("status") {
         parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
-          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sorted }
+          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
           val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
           val detailsFlag = details.getOrElse("false").toBoolean
           if (format.getOrElse("text")=="html") respondWithMediaType(MediaTypes.`text/html`) {
@@ -82,7 +84,16 @@ class ApiActor extends Actor with HttpService {
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status
-              }</td></tr></b>"""}.mkString(s"""<html><body><p>Station time: ${utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))}<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td></tr></b>"""}.mkString(s"""<html><body><p>BG time: ${
+                utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))
+              }, Last Refresh time: ${
+                utils.ymdHMs_format.print(Scheduler.refreshTime)
+              }, Results: ${
+                Scheduler.refreshResults.map{
+                  case (station, Success(res)) => station.name + " => " + res
+                  case (station, Failure(e)) => station.name + " => " + e
+                }
+              }<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
           } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
@@ -110,6 +121,9 @@ class ApiActor extends Actor with HttpService {
           complete { "Request accepted." }
         }
       }
+
+      // !!!could be buggy !!!
+      //path("refresh") { complete { "Refresh completed." + Scheduler.refreshAll} }
   })
 
 }

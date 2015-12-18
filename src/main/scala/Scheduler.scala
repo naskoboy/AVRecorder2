@@ -9,7 +9,7 @@ import nasko.avrecorder.api.ApiBoot
 import org.joda.time.format.DateTimeFormat
 import org.joda.time.{Seconds, Minutes, DateTimeZone, DateTime}
 import org.slf4j.LoggerFactory
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
 import scala.xml.Node
 
 /**
@@ -30,6 +30,7 @@ object utils extends LazyLogging  {
   val months = Vector("януари","февруари","март","април","май","юни","юли","август","септември","октомври","ноември","декември")
   val published_reg = "публикувано на (\\d\\d).(\\d\\d).(\\d\\d)(.*)".r
   val ymdHM_format = DateTimeFormat.forPattern("yyyy-MM-dd HH:mm")
+  val ymdHMs_format = DateTimeFormat.forPattern("yyyy-MM-dd HH:mm:ss")
   val HM_format = DateTimeFormat.forPattern("HH:mm")
 
   val config = ConfigFactory.load()
@@ -59,16 +60,16 @@ object utils extends LazyLogging  {
     adapter.loadXML(source, parser)
   }
 
-  def audioRecorder(station_prefix: String, url: String, destination_folder: String, padding: Int)(station: Station, article: Article) = Try {
-    Station.ledger.synchronized{ Station.ledger += article->Status.Running}
+  val audioRecorder = (article: Article) => Try {
+    Station.ledger.synchronized{ Station.ledger += article->Status.Running }
     val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
-    val filename = s"${station_prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
-    val fullFileName = s"""$destination_folder\\$filename.mp3"""
+    val filename = s"${article.station.prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
+    val fullFileName = s"""${article.station.destination}\\$filename.mp3"""
     import sys.process._
-    val cmd = s""""${utils.vlc}" $url --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
+    val cmd = s""""${utils.vlc}" ${article.station.url} --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
     logger.info(cmd)
     val process = cmd.run
-    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+padding*60))
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.padding*60))
     process.destroy()
     logger.info(s"$fullFileName COMPLETED")
 
@@ -137,7 +138,15 @@ object Status extends Enumeration {
 object Station {
   val ledger = collection.mutable.Map.empty[Article,Status.Value]
 }
-abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Article) => Try[Unit]) { outer =>
+abstract class Station(
+  val name: String,
+  val prefix: String,
+  val url: String,
+  val destination: String,
+  val padding: Int,
+  val cycleHours: Int,
+  recorder: Article => Try[Unit]
+) {
 
   def programa: List[Article]
 
@@ -163,47 +172,41 @@ abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Art
 
   def schedule(article: Article): Unit = {
     utils.logger.info(s"scheduled $name $article")
-    utils.scheduler.schedule(new Runnable{ def run() = recorder(outer,article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+    utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
   }
 
-  def go {
-    new Thread {
-      override def run: Unit = {
-        while(true) try {
-          val (pickers, timeslots) = getSubscriptions
-          val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
-          val end = start.plusHours(cycleHours)
-          val prog = programa.filter(_.start.isAfter(start))
-          Station.ledger.synchronized {
-            val toberemoved = Station.ledger.iterator.filter{ case (article,status) =>
-              article.station==this &&
-                (article.start.isAfter(start) ||
-                (article.start.isBefore(start.minusHours(utils.config.getInt("ledger_retention"))) && status!=Status.Scheduled && status!=Status.Running))
-            }.map(_._1)
-            toberemoved.foreach(Station.ledger.remove)
-            (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
-              if (pickers.exists(article.title.indexOf(_) >= 0)) {
-                if (article.start.isAfter(start) && article.start.isBefore(end)) {
-                  schedule(article)
-                  Station.ledger += article->Status.Scheduled
-                }
-                else Station.ledger += article->Status.Picked
-              }
-              else Station.ledger += article->Status.Registered
+  def refresh(start: DateTime, end: DateTime) = Try {
+    val prog = programa.filter(_.start.isAfter(start))
+    if (!prog.isEmpty) {
+      val (pickers, timeslots) = getSubscriptions
+      Station.ledger.synchronized {
+        val toberemoved = Station.ledger.iterator.filter{ case (article,status) =>
+          article.station==this &&
+            (article.start.isAfter(start) ||
+              (article.start.isBefore(start.minusHours(utils.config.getInt("ledger_retention"))) && status!=Status.Running))
+        }.map(_._1)
+        toberemoved.foreach(Station.ledger.remove)
+        (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
+          if (pickers.exists(article.title.indexOf(_) >= 0) /* || pickers.exists(article.details.getOrElse("").indexOf(_) >= 0)*/) {
+            if (article.start.isAfter(start) && article.start.isBefore(end)) {
+              schedule(article)
+              Station.ledger += article->Status.Scheduled
             }
+            else Station.ledger += article->Status.Picked
           }
-          Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
-        } catch {
-          case t: Throwable => System.out.println(t)
+          else Station.ledger += article->Status.Registered
         }
-      }
-    }.start
+      }}
+      "OK"
   }
 
 }
 
 
 object Scheduler {
+
+  var refreshTime = DateTime.now
+  var refreshResults = Seq.empty[(Station, Try[String])]
 
   def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
@@ -273,46 +276,55 @@ object Scheduler {
 
   import utils.config
   object HristoBotev extends Station(
-    utils.config.getString("stations.HristoBotev.name"),
-    utils.config.getInt("stations.HristoBotev.cycleHours"),
-    utils.audioRecorder(
+      config.getString("stations.HristoBotev.name"),
       config.getString("stations.HristoBotev.prefix"),
       config.getString("stations.HristoBotev.url"),
       config.getString("stations.HristoBotev.destination"),
-      config.getInt("stations.HristoBotev.padding"))
+      config.getInt("stations.HristoBotev.padding"),
+      config.getInt("stations.HristoBotev.cycleHours"),
+      utils.audioRecorder
   ) {
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(this,weeklyDoc)
-      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano(this,"http://bnr.bg" + it \ "@href")).sortWith((a,b) => a.start.isBefore(b.start))
+      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano(this,"http://bnr.bg" + it \ "@href")).sorted(Ordering[Article])
       val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(this,t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
       enrichedWeeklyProgram
     }
   }
 
   object Horizont extends Station(
-    utils.config.getString("stations.Horizont.name"),
-    utils.config.getInt("stations.Horizont.cycleHours"),
-    utils.audioRecorder(
-      config.getString("stations.Horizont.prefix"),
-      config.getString("stations.Horizont.url"),
-      config.getString("stations.Horizont.destination"),
-      config.getInt("stations.Horizont.padding"))
+    config.getString("stations.Horizont.name"),
+    config.getString("stations.Horizont.prefix"),
+    config.getString("stations.Horizont.url"),
+    config.getString("stations.Horizont.destination"),
+    config.getInt("stations.Horizont.padding"),
+    config.getInt("stations.Horizont.cycleHours"),
+    utils.audioRecorder
   ) {
-    def programa = {
-      bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
-    }
+    def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
   }
 
   val stations = Map(Horizont.name -> Horizont, HristoBotev -> HristoBotev)
 
-  def main(args: Array[String]) = {
-    ApiBoot.main(Array())
-    for (
+  def refreshAll = {
+    val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
+    val end = start.plusHours(utils.config.getInt("refreshWindowSize"))
+    refreshResults = for (
       selected <- utils.config.getString("active_stations").split(",");
       station <- stations.values
       if (station.name == selected)
-    ) station.go
+    ) yield (station, station.refresh(start, end))
+    refreshTime = start
+    end
+  }
+
+  def main(args: Array[String]) = {
+    new Thread { override def run = ApiBoot.main(Array())}.start
+
+    while(true) {
+      Thread.sleep(Seconds.secondsBetween(DateTime.now, refreshAll).getSeconds*1000L)
+    }
   }
 
 }
