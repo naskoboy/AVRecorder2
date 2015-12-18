@@ -1,6 +1,7 @@
 package nasko.avrecorder
 
 import java.io.File
+import java.lang.Throwable
 import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.{Logger, LazyLogging}
@@ -59,7 +60,7 @@ object utils extends LazyLogging  {
   }
 
   def audioRecorder(station_prefix: String, url: String, destination_folder: String, padding: Int)(station: Station, article: Article) = Try {
-    station.ledger.synchronized{ station.ledger += article->Status.Running}
+    Station.ledger.synchronized{ Station.ledger += article->Status.Running}
     val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
     val filename = s"${station_prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
     val fullFileName = s"""$destination_folder\\$filename.mp3"""
@@ -92,18 +93,20 @@ object utils extends LazyLogging  {
     val file = AudioFileIO.read(new File(fullFileName))
     file.setTag(tag)
     file.commit
-    station.ledger.synchronized{ station.ledger += article->Status.Completed}
+    Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
   }
 
 }
 
-case class Article(start: DateTime, end: DateTime, minimalTitle: String, title: String, details: Option[String]) extends Ordered[Article] {
+case class Article(station: Station, start: DateTime, end: DateTime, minimalTitle: String, title: String, details: Option[String]) extends Ordered[Article] {
 
   def compare (that: Article) = {
-    if (this.start == that.start) 0
-    else if (this.start.isAfter(that.start)) 1
-    else -1
+    if (this.station.name<that.station.name) -1 else
+    if (this.station.name>that.station.name) +1 else
+    if (this.start.isBefore(that.start)) -1 else
+    if (this.start.isAfter(that.start)) +1
+    else 0
   }
 
   override def toString() = s"${ utils.ymdHM_format.print(start) } >> ${
@@ -131,9 +134,11 @@ object Status extends Enumeration {
   val Registered,Picked,Scheduled,Running,Completed = Value
 }
 
+object Station {
+  val ledger = collection.mutable.Map.empty[Article,Status.Value]
+}
 abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Article) => Try[Unit]) { outer =>
 
-  val ledger = collection.mutable.Map.empty[Article,Status.Value]
   def programa: List[Article]
 
   def getSubscriptions = {
@@ -144,7 +149,7 @@ abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Art
       case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
         val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
         val nextDay = now.plusDays((day.toInt-now.dayOfWeek().get()+7)%7)
-        (acc._1, Article(nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, title, None) :: acc._2)
+        (acc._1, Article(this,nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, title, None) :: acc._2)
       case picker_reg(station,words) if (station == name) =>
         (words :: acc._1, acc._2)
       case _ => (acc._1, acc._2)
@@ -164,27 +169,32 @@ abstract class Station(val name: String, cycleHours: Int, recorder: (Station,Art
   def go {
     new Thread {
       override def run: Unit = {
-        while(true) {
-          //import Status._
+        while(true) try {
           val (pickers, timeslots) = getSubscriptions
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusHours(cycleHours)
           val prog = programa.filter(_.start.isAfter(start))
-          ledger.synchronized {
-            val toberemoved = ledger.filterKeys{ _.start.isAfter(start) }.keys
-            toberemoved.foreach(ledger.remove)
+          Station.ledger.synchronized {
+            val toberemoved = Station.ledger.iterator.filter{ case (article,status) =>
+              article.station==this &&
+                (article.start.isAfter(start) ||
+                (article.start.isBefore(start.minusHours(utils.config.getInt("ledger_retention"))) && status!=Status.Scheduled && status!=Status.Running))
+            }.map(_._1)
+            toberemoved.foreach(Station.ledger.remove)
             (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
               if (pickers.exists(article.title.indexOf(_) >= 0)) {
                 if (article.start.isAfter(start) && article.start.isBefore(end)) {
                   schedule(article)
-                  ledger += article->Status.Scheduled
+                  Station.ledger += article->Status.Scheduled
                 }
-                else ledger += article->Status.Picked
+                else Station.ledger += article->Status.Picked
               }
-              else ledger += article->Status.Registered
+              else Station.ledger += article->Status.Registered
             }
           }
           Thread.sleep(Seconds.secondsBetween(DateTime.now, end).getSeconds*1000L)
+        } catch {
+          case t: Throwable => System.out.println(t)
         }
       }
     }.start
@@ -199,7 +209,7 @@ object Scheduler {
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
   def expandedTime(a1: DateTime, a2: DateTime, b1: DateTime, b2: DateTime) = (if (a1.isBefore(b1)) a1 else b1, if (a2.isAfter(b2)) a2 else b2)
 
-  def hb_izbrano(url: String) = {
+  def hb_izbrano(station: Station, url: String) = {
 
     def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
       case <br/> => Nil
@@ -231,11 +241,11 @@ object Scheduler {
         case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
         case _ => (0,0)
       }
-      Article(datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
+      Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
     }
   }
 
-  def bnr_sedmichna_programa(doc: Node) = {
+  def bnr_sedmichna_programa(station: Station, doc: Node) = {
 
     def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
       case node:Node if (node.label=="#PCDATA") => Nil
@@ -255,9 +265,9 @@ object Scheduler {
         val <div>{_}<div>{time}</div>{item @ _*}</div> = art
         val title = (try item(1) catch { case _ => item(0) }).text.trim
         val utils.time_hh_mm(h,m) = time.text
-        Article(datetime.plusMinutes(h.toInt*60+m.toInt), datetime, title, title, None)
+        Article(station,datetime.plusMinutes(h.toInt*60+m.toInt), datetime, title, title, None)
       }
-      (articles.zip(articles.tail ++ List(Article(datetime.plusDays(1),datetime,"","",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
+      (articles.zip(articles.tail ++ List(Article(station,datetime.plusDays(1),datetime,"","",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
     }}
   }
 
@@ -273,9 +283,9 @@ object Scheduler {
   ) {
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
-      val weeklyProgram = bnr_sedmichna_programa(weeklyDoc)
-      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano("http://bnr.bg" + it \ "@href")).sortWith((a,b) => a.start.isBefore(b.start))
-      val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
+      val weeklyProgram = bnr_sedmichna_programa(this,weeklyDoc)
+      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano(this,"http://bnr.bg" + it \ "@href")).sortWith((a,b) => a.start.isBefore(b.start))
+      val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(this,t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
       enrichedWeeklyProgram
     }
   }
@@ -290,17 +300,17 @@ object Scheduler {
       config.getInt("stations.Horizont.padding"))
   ) {
     def programa = {
-      bnr_sedmichna_programa(utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
+      bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
     }
   }
 
-  val stations = Vector(Horizont, HristoBotev)
+  val stations = Map(Horizont.name -> Horizont, HristoBotev -> HristoBotev)
 
   def main(args: Array[String]) = {
     ApiBoot.main(Array())
     for (
       selected <- utils.config.getString("active_stations").split(",");
-      station <- stations
+      station <- stations.values
       if (station.name == selected)
     ) station.go
   }

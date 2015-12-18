@@ -4,7 +4,7 @@ import akka.actor.{Actor, Props, ActorSystem}
 import akka.event.Logging
 import akka.io.IO
 import akka.routing.RoundRobinPool
-import nasko.avrecorder.{Status, Article, Scheduler, utils}
+import nasko.avrecorder._
 import org.joda.time.{DateTimeZone, DateTime}
 import spray.can.Http
 import spray.http.{MediaTypes, StatusCodes}
@@ -45,7 +45,7 @@ class ApiActor extends Actor with HttpService {
       path("programa") {
         parameters('station) { station =>
           complete {
-            Scheduler.stations.find(_.name == station).get.programa.mkString("\n")
+            Scheduler.stations(station).programa.mkString("\n")
           }
         }
       } ~
@@ -54,14 +54,13 @@ class ApiActor extends Actor with HttpService {
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusDays(7)
           complete {
-            Scheduler.stations.find(_.name == station).get.pick(start, end).mkString("\n")
+            Scheduler.stations(station).pick(start, end).mkString("\n")
           }
         }
       } ~
       path("status") {
-        parameters('station, 'format.?, 'details.?) { (station,format,details) => {
-          val ledger = Scheduler.stations.find(_.name == station).get.ledger
-          val list = ledger.synchronized{ ledger.filterKeys(it => it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortBy(_._1.start.getMillis)}
+        parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
+          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sorted }
           val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
           val detailsFlag = details.getOrElse("false").toBoolean
           if (format.getOrElse("text")=="html") respondWithMediaType(MediaTypes.`text/html`) {
@@ -75,14 +74,15 @@ class ApiActor extends Actor with HttpService {
                   case _ => ""
                 }
               }"><td>${
+                article.station.name}</td><td>${
                 utils.ymdHM_format.print(article.start)}</td><td>${
                 utils.ymdHM_format.print(article.end)}</td><td>${
                 (if (article==current) ">>>   " else "") +
                 article.title}</td>${
-                if (detailsFlag) s"<td>${article.details.getOrElse("")}</td>" else ""
+                if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status
-              }</td></tr></b>"""}.mkString(s"""<html><body><p>Station time: ${utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))}<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td></tr></b>"""}.mkString(s"""<html><body><p>Station time: ${utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))}<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
           } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
@@ -93,24 +93,21 @@ class ApiActor extends Actor with HttpService {
           val reg2 = """([^ ]*) (\d{1,2}) (.*)""".r
           val (station, article) =
           articleStr match {
-            case reg1(station,h1,m1,h2,m2,title) =>
+            case reg1(stationStr,h1,m1,h2,m2,title) =>
               val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withTimeAtStartOfDay()
               var start = today.plusMinutes(h1.toInt*60+m1.toInt)
               var end   = today.plusMinutes(h2.toInt*60+m2.toInt)
               if (start.isBeforeNow) { start = start.plusDays(1) ; end = end.plusDays(1) }
-              (Scheduler.stations.find(_.name == station), Article(start, end, title, title, None))
-            case reg2(station,duration,title) =>
+              val station = Scheduler.stations(stationStr)
+              (station, Article(station, start, end, title, title, None))
+            case reg2(stationStr,duration,title) =>
               val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
-              (Scheduler.stations.find(_.name == station), Article(now, now.plusMinutes(duration.toInt), "Requested", title, None))
+              val station = Scheduler.stations(stationStr)
+              (station, Article(station, now, now.plusMinutes(duration.toInt), "Requested", title, None))
           }
-          complete { station match{
-            case Some(st) =>
-              st.schedule(article)
-              st.ledger.synchronized(st.ledger.synchronized{ st.ledger += article->Status.Scheduled})
-              "Request accepted."
-            case None => "Unknown station."
-          }}
-
+          station.schedule(article)
+          Station.ledger.synchronized(Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled})
+          complete { "Request accepted." }
         }
       }
   })
