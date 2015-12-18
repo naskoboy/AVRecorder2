@@ -60,6 +60,14 @@ class ApiActor extends Actor with HttpService {
           }
         }
       } ~
+      path("request") {
+        parameters('station) { stationStr =>
+          val station = Scheduler.stations(stationStr)
+          val article = Station.ledger.keys.find(a => a.station==station && a.start.isBeforeNow && a.end.isAfterNow).get
+          station.schedule(article)
+          complete { "Done" }
+        }
+      } ~
       path("status") {
         parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
           val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
@@ -84,44 +92,47 @@ class ApiActor extends Actor with HttpService {
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status
-              }</td></tr></b>"""}.mkString(s"""<html><body><p>BG time: ${
+              }</td></tr></b>"""}.mkString(s"""<html><body><p><table border="1"><tr><td>BG time</td><td> ${
                 utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))
-              }, Last Refresh time: ${
+              }</td></tr><tr><td>Last Refresh time</td><td> ${
                 utils.ymdHMs_format.print(Scheduler.refreshTime)
-              }, Results: ${
+              }</td></tr><tr><td>Next Refresh time</td><td> ${
+                utils.ymdHMs_format.print(Scheduler.nextRefreshTime)
+              }</td></tr><tr><td>Refresh results</td><td> ${
                 Scheduler.refreshResults.map{
                   case (station, Success(res)) => station.name + " => " + res
                   case (station, Failure(e)) => station.name + " => " + e
                 }
-              }<img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td></tr></table><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
           } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
-      } ~
+      }
+/*
       path("request") {
         parameters('article) { articleStr =>
-          val reg1 = """([^ ]*) (\d{1,2}):(\d\d) (\d{1,2}):(\d\d) (.*)""".r
-          val reg2 = """([^ ]*) (\d{1,2}) (.*)""".r
+          val reg1 = """([^ ]*)""".r
+          val reg2 = """([^ ]*) (\d{1,2})""".r
           val (station, article) =
           articleStr match {
-            case reg1(stationStr,h1,m1,h2,m2,title) =>
+            case reg1(stationStr,h1,m1,h2,m2) =>
               val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withTimeAtStartOfDay()
               var start = today.plusMinutes(h1.toInt*60+m1.toInt)
               var end   = today.plusMinutes(h2.toInt*60+m2.toInt)
               if (start.isBeforeNow) { start = start.plusDays(1) ; end = end.plusDays(1) }
               val station = Scheduler.stations(stationStr)
-              (station, Article(station, start, end, title, title, None))
-            case reg2(stationStr,duration,title) =>
+              (station, Article(station, start, end, "title", "title", None))
+            case reg2(stationStr,duration) =>
               val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
               val station = Scheduler.stations(stationStr)
-              (station, Article(station, now, now.plusMinutes(duration.toInt), "Requested", title, None))
+              (station, Article(station, now, now.plusMinutes(duration.toInt), "Requested", "title", None))
           }
           station.schedule(article)
-          Station.ledger.synchronized(Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled})
+          Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled}
           complete { "Request accepted." }
         }
       }
-
+*/
       // !!!could be buggy !!!
       //path("refresh") { complete { "Refresh completed." + Scheduler.refreshAll} }
   })

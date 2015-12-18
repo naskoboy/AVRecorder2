@@ -171,8 +171,9 @@ abstract class Station(
   }
 
   def schedule(article: Article): Unit = {
-    utils.logger.info(s"scheduled $name $article")
     utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+    Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled}
+    utils.logger.info(s"scheduled $name $article")
   }
 
   def refresh(start: DateTime, end: DateTime) = Try {
@@ -188,10 +189,7 @@ abstract class Station(
         toberemoved.foreach(Station.ledger.remove)
         (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
           if (pickers.exists(article.title.indexOf(_) >= 0) /* || pickers.exists(article.details.getOrElse("").indexOf(_) >= 0)*/) {
-            if (article.start.isAfter(start) && article.start.isBefore(end)) {
-              schedule(article)
-              Station.ledger += article->Status.Scheduled
-            }
+            if (article.start.isAfter(start) && article.start.isBefore(end)) schedule(article)
             else Station.ledger += article->Status.Picked
           }
           else Station.ledger += article->Status.Registered
@@ -206,6 +204,7 @@ abstract class Station(
 object Scheduler {
 
   var refreshTime = DateTime.now
+  var nextRefreshTime = DateTime.now
   var refreshResults = Seq.empty[(Station, Try[String])]
 
   def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
@@ -323,7 +322,8 @@ object Scheduler {
     new Thread { override def run = ApiBoot.main(Array())}.start
 
     while(true) {
-      Thread.sleep(Seconds.secondsBetween(DateTime.now, refreshAll).getSeconds*1000L)
+      nextRefreshTime = refreshAll
+      Thread.sleep(Seconds.secondsBetween(DateTime.now, nextRefreshTime).getSeconds*1000L)
     }
   }
 
