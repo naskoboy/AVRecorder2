@@ -61,11 +61,14 @@ class ApiActor extends Actor with HttpService {
         }
       } ~
       path("request") {
-        parameters('station) { stationStr =>
+        parameters('station, 'startMillis) { (stationStr, startMillisStr) =>
           val station = Scheduler.stations(stationStr)
-          val article = Station.ledger.keys.find(a => a.station==station && a.start.isBeforeNow && a.end.isAfterNow).get
-          station.schedule(article)
-          complete { "Done" }
+          val startMillis = startMillisStr.toLong
+          val (article,status) = Station.ledger.find(it => it._1.station==station && it._1.start.getMillis<=startMillis && startMillis<it._1.end.getMillis).get
+          if (status==Status.Registered) {
+            station.schedule(article)
+            complete { "Done" }
+          } else throw new RuntimeException("Article must be Registered.")
         }
       } ~
       path("status") {
@@ -88,7 +91,7 @@ class ApiActor extends Actor with HttpService {
                 utils.ymdHM_format.print(article.start)}</td><td>${
                 utils.ymdHM_format.print(article.end)}</td><td>${
                 (if (article==current) ">>>   " else "") +
-                article.title}</td>${
+                article.title + "  " + article.start.getMillis}</td>${
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status

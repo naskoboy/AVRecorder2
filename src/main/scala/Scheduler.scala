@@ -156,7 +156,7 @@ abstract class Station(
     val subscriptions = scala.io.Source.fromFile(utils.config.getString("subscriptions")).getLines().toList.filter(it => it != "" && it(0)!="#")
     subscriptions.foldLeft(List.empty[String], List.empty[Article]){ (acc,it) => it match {
       case timeslot_reg(station,day,h1,m1,h2,m2,title) if (station == name) =>
-        val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
+        val now = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
         val nextDay = now.plusDays((day.toInt-now.dayOfWeek().get()+7)%7)
         (acc._1, Article(this,nextDay.withHourOfDay(h1.toInt).withMinuteOfHour(m1.toInt), nextDay.withHourOfDay(h2.toInt).withMinuteOfHour(m2.toInt), title, title, None) :: acc._2)
       case picker_reg(station,words) if (station == name) =>
