@@ -1,5 +1,7 @@
 package nasko.avrecorder.api
 
+import java.net.URLEncoder
+
 import akka.actor.{Actor, Props, ActorSystem}
 import akka.event.Logging
 import akka.io.IO
@@ -60,24 +62,34 @@ class ApiActor extends Actor with HttpService {
           }
         }
       } ~
-      path("request") {
-        parameters('station, 'startMillis) { (stationStr, startMillisStr) =>
-          val station = Scheduler.stations(stationStr)
+      path("pick") {
+        parameters('station, 'startMillis, 'forwardParams) { (station, startMillisStr, forwardParams) =>
           val startMillis = startMillisStr.toLong
-          val (article,status) = Station.ledger.find(it => it._1.station==station && it._1.start.getMillis<=startMillis && startMillis<it._1.end.getMillis).get
-          if (status==Status.Registered) {
-            station.schedule(article)
-            complete { "Done" }
-          } else throw new RuntimeException("Article must be Registered.")
+          scala.tools.nsc.io.File(utils.config.getString("picks")).appendAll(s"$station $startMillisStr\n")
+          Station.ledger.synchronized {
+            val article = Station.ledger.keys.find { a => a.station.name == station && a.start.getMillis == startMillis }.get
+            if (startMillis < Scheduler.nextRefreshTime.getMillis) article.station.schedule(article)
+            else Station.ledger += article -> Status.Picked
+          }
+          get { ctx => ctx.redirect(s"/api/status?$forwardParams", StatusCodes.Found) }
         }
+      } ~
+      path("shutdown") { complete {
+        if (!Station.ledger.values.exists(_ == Status.Running)) { System.exit(0) ; "Done" }
+        else {
+          Scheduler.shutdown = true
+          "Recording in  progress. Shutdown pending."
+        }
+      }
       } ~
       path("status") {
         parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
           val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
           val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
           val detailsFlag = details.getOrElse("false").toBoolean
-          if (format.getOrElse("text")=="html") respondWithMediaType(MediaTypes.`text/html`) {
+          if (format.getOrElse("text")=="html") { ctx => respondWithMediaType(MediaTypes.`text/html`) {
             complete {
+              val params = ctx.request.uri.query.toString
               list.map{ case (article,status) => s"""<tr style="background-color: ${
                 status match {
                   case Status.Completed => "LightBlue"
@@ -91,7 +103,10 @@ class ApiActor extends Actor with HttpService {
                 utils.ymdHM_format.print(article.start)}</td><td>${
                 utils.ymdHM_format.print(article.end)}</td><td>${
                 (if (article==current) ">>>   " else "") +
-                article.title + "  " + article.start.getMillis}</td>${
+                article.title +
+                  (if (status==Status.Registered) s"""  <a href="/api/pick?station=${article.station.name}&startMillis=${article.start.getMillis}&forwardParams=${URLEncoder.encode(params,"UTF-8")}"> Record</a>"""
+                  else "")
+              }</td>${
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status
@@ -106,9 +121,11 @@ class ApiActor extends Actor with HttpService {
                   case (station, Success(res)) => station.name + " => " + res
                   case (station, Failure(e)) => station.name + " => " + e
                 }
-              }</td></tr></table><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td></tr>${
+                if (Scheduler.shutdown) "<tr><td>Shitdown PENDING</td></tr>"
+              }</table><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
-          } else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
+          }.apply(ctx)} else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
       }
 /*

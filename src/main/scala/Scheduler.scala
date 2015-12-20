@@ -1,6 +1,6 @@
 package nasko.avrecorder
 
-import java.io.File
+import java.io.{PrintWriter, File}
 import java.lang.Throwable
 import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
@@ -171,12 +171,16 @@ abstract class Station(
   }
 
   def schedule(article: Article): Unit = {
-    utils.scheduler.schedule(new Runnable{ def run() = recorder(article) }, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+    utils.scheduler.schedule(new Runnable{ def run() = {
+      val res = recorder(article)
+      if (Scheduler.shutdown && !Station.ledger.values.exists(_ == Status.Running)) System.exit(0)
+      res
+    }}, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
     Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled}
     utils.logger.info(s"scheduled $name $article")
   }
 
-  def refresh(start: DateTime, end: DateTime) = Try {
+  def refresh(start: DateTime, end: DateTime, picks: List[(String,Long)]) = Try {
     val prog = programa.filter(_.start.isAfter(start))
     if (!prog.isEmpty) {
       val (pickers, timeslots) = getSubscriptions
@@ -188,7 +192,7 @@ abstract class Station(
         }.map(_._1)
         toberemoved.foreach(Station.ledger.remove)
         (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
-          if (pickers.exists(article.title.indexOf(_) >= 0) /* || pickers.exists(article.details.getOrElse("").indexOf(_) >= 0)*/) {
+          if (pickers.exists(article.title.indexOf(_) >= 0) || (picks.exists(it => article.station.name==it._1 && article.start.getMillis==it._2))) {
             if (article.start.isAfter(start) && article.start.isBefore(end)) schedule(article)
             else Station.ledger += article->Status.Picked
           }
@@ -206,6 +210,7 @@ object Scheduler {
   var refreshTime = DateTime.now
   var nextRefreshTime = DateTime.now
   var refreshResults = Seq.empty[(Station, Try[String])]
+  var shutdown = false
 
   def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
@@ -304,16 +309,24 @@ object Scheduler {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
   }
 
-  val stations = Map(Horizont.name -> Horizont, HristoBotev -> HristoBotev)
+  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev)
 
   def refreshAll = {
     val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
     val end = start.plusHours(utils.config.getInt("refreshWindowSize"))
+
+    val reg = """(.*) (.*)""".r
+    val picksFilename = utils.config.getString("picks")
+    val picks = scala.io.Source.fromFile(picksFilename).getLines().map{case reg(a,b) => (a,b.toLong)}.toList.filter{case (_,b) => b>=start.getMillis}
+    val writer = new PrintWriter(new File(picksFilename))
+    writer.write(picks.map(it => s"${it._1} ${it._1}\n").mkString)
+    writer.close()
+
     refreshResults = for (
       selected <- utils.config.getString("active_stations").split(",");
       station <- stations.values
       if (station.name == selected)
-    ) yield (station, station.refresh(start, end))
+    ) yield (station, station.refresh(start, end, picks))
     refreshTime = start
     end
   }

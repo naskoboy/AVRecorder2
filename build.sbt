@@ -10,6 +10,7 @@ libraryDependencies ++= {
   val sprayVersion = "1.3.3"
   val akkaVersion = "2.3.14"
   Seq(
+    "org.scala-lang" % "scala-compiler" % scalaVersion.value,
     "joda-time" % "joda-time" % "2.6",
     "javax.mail" % "mail" % "1.4.7",
     "com.typesafe" % "config" % "1.3.0",
