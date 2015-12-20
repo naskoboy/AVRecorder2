@@ -144,7 +144,6 @@ abstract class Station(
   val url: String,
   val destination: String,
   val padding: Int,
-  val cycleHours: Int,
   recorder: Article => Try[Unit]
 ) {
 
@@ -285,7 +284,6 @@ object Scheduler {
       config.getString("stations.HristoBotev.url"),
       config.getString("stations.HristoBotev.destination"),
       config.getInt("stations.HristoBotev.padding"),
-      config.getInt("stations.HristoBotev.cycleHours"),
       utils.audioRecorder
   ) {
     def programa = {
@@ -303,7 +301,6 @@ object Scheduler {
     config.getString("stations.Horizont.url"),
     config.getString("stations.Horizont.destination"),
     config.getInt("stations.Horizont.padding"),
-    config.getInt("stations.Horizont.cycleHours"),
     utils.audioRecorder
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
@@ -319,7 +316,7 @@ object Scheduler {
     val picksFilename = utils.config.getString("picks")
     val picks = scala.io.Source.fromFile(picksFilename).getLines().map{case reg(a,b) => (a,b.toLong)}.toList.filter{case (_,b) => b>=start.getMillis}
     val writer = new PrintWriter(new File(picksFilename))
-    writer.write(picks.map(it => s"${it._1} ${it._1}\n").mkString)
+    writer.write(picks.map(it => s"${it._1} ${it._2}\n").mkString)
     writer.close()
 
     refreshResults = for (
