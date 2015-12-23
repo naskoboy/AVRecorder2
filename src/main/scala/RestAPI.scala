@@ -31,8 +31,8 @@ object ApiBoot extends App {
 
 }
 
-
-class ApiActor extends Actor with HttpService {
+import scala.concurrent.ExecutionContext.Implicits.global
+class ApiActor extends Actor with HttpService with Authenticator {
   implicit def myExceptionHandler(implicit log: LoggingContext) =
     ExceptionHandler {
       case e: Exception =>
@@ -62,7 +62,8 @@ class ApiActor extends Actor with HttpService {
           }
         }
       } ~
-      path("pick") {
+      path("pick") { authenticate(basicUserAuthenticator) { authInfo =>
+      if (!authInfo.hasPermission("Record")) throw new RuntimeException("Not authorized")
         parameters('station, 'startMillis, 'forwardParams) { (station, startMillisStr, forwardParams) =>
           val startMillis = startMillisStr.toLong
           scala.tools.nsc.io.File(utils.config.getString("picks")).appendAll(s"$station $startMillisStr\n")
@@ -73,18 +74,19 @@ class ApiActor extends Actor with HttpService {
           }
           get { ctx => ctx.redirect(s"/api/status?$forwardParams", StatusCodes.Found) }
         }
-      } ~
-      path("shutdown") { complete {
+      }} ~
+      path("shutdown") { authenticate(basicUserAuthenticator) { authInfo => complete {
+        if (!authInfo.hasPermission("Shutdown")) throw new RuntimeException("Not authorized")
         if (!Station.ledger.values.exists(_ == Status.Running)) { System.exit(0) ; "Done" }
         else {
           Scheduler.shutdown = true
           "Recording in  progress. Shutdown pending."
         }
-      }
-      } ~
-      path("status") {
+      }}} ~
+      path("status") { authenticate(basicUserAuthenticator) { authInfo =>
         parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
-          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(3))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
+          val recordPermission = authInfo.hasPermission("Record")
+          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(utils.config.getInt("ledger_retention")))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
           val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
           val detailsFlag = details.getOrElse("false").toBoolean
           if (format.getOrElse("text")=="html") { ctx => respondWithMediaType(MediaTypes.`text/html`) {
@@ -104,7 +106,7 @@ class ApiActor extends Actor with HttpService {
                 utils.ymdHM_format.print(article.end)}</td><td>${
                 (if (article==current) ">>>   " else "") +
                 article.title +
-                  (if (status==Status.Registered) s"""  <a href="/api/pick?station=${article.station.name}&startMillis=${article.start.getMillis}&forwardParams=${URLEncoder.encode(params,"UTF-8")}"> Record</a>"""
+                  (if (recordPermission && status==Status.Registered) s"""  <a href="/api/pick?station=${article.station.name}&startMillis=${article.start.getMillis}&forwardParams=${URLEncoder.encode(params,"UTF-8")}"> Record</a>"""
                   else "")
               }</td>${
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
@@ -122,12 +124,12 @@ class ApiActor extends Actor with HttpService {
                   case (station, Failure(e)) => station.name + " => " + e
                 }
               }</td></tr>${
-                if (Scheduler.shutdown) "<tr><td>Shitdown PENDING</td></tr>"
+                if (Scheduler.shutdown) "<tr><td>Shutdown PENDING</td></tr>"
               }</table><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
             }
           }.apply(ctx)} else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
-      }
+      }}
 /*
       path("request") {
         parameters('article) { articleStr =>

@@ -215,42 +215,6 @@ object Scheduler {
   def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
   def expandedTime(a1: DateTime, a2: DateTime, b1: DateTime, b2: DateTime) = (if (a1.isBefore(b1)) a1 else b1, if (a2.isAfter(b2)) a2 else b2)
 
-  def hb_izbrano(station: Station, url: String) = {
-
-    def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
-      case <br/> => Nil
-      case <p>{items @ _*}</p>       => strip(items)
-      case <span>{items @ _*}</span> => strip(items)
-      case <div>{items @ _*}</div>   => strip(items)
-      case it => Seq(it)
-    }
-    val doc = utils.loadXML(url)
-    val utils.published_reg(pDateStr,pMonthStr,pYearStr,_) = (doc \\ "span").find(it => (it \ "@itemprop").text == "datePublished").get.text
-    val pDate = new DateTime(2000+pYearStr.toInt, pMonthStr.toInt, pDateStr.toInt,0,0, DateTimeZone.forID("Europe/Sofia"))
-
-    val news_title = (doc \\ "div").find(it => (it \ "@class").text == "news_title").get
-    val (dayNode, postedNode, cont) = news_title match { case <div>{_}<h1>{day @ _*}</h1>{_}<div>{date @ _*}</div>{_}<div>{cont @ _*}</div>{w @ _*}</div> => (day, date, cont)}
-    val utils.day_reg(dayStr, dateStr, monthStr) = dayNode.text
-
-    val datetime = {
-      val candidate = new DateTime(2000+pYearStr.toInt, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
-      if (candidate.isAfter(pDate)) candidate
-      else new DateTime(2000+pYearStr.toInt+1, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
-    }
-
-    val cont_flat = strip(cont)
-    val locations = cont_flat.foldLeft((List.empty[Int],0))((acc,it) => it match { case <b>{_}{some @ _*}</b> => (acc._2-1 :: acc._1, acc._2+1) case _ => (acc._1, acc._2+1) })._1.reverse.drop(1)
-    val location_splits = locations.zip(locations.drop(1) ++ List(cont_flat.size))
-    val items = location_splits.map(it => cont_flat.drop(it._1).take(it._2-it._1))
-    items.map{ case date :: title :: details =>
-      val (t1, t2) = date.text match {
-        case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
-        case _ => (0,0)
-      }
-      Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
-    }
-  }
-
   def bnr_sedmichna_programa(station: Station, doc: Node) = {
 
     def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
@@ -293,6 +257,43 @@ object Scheduler {
       val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(this,t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
       enrichedWeeklyProgram
     }
+
+    def hb_izbrano(station: Station, url: String) = {
+
+      def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
+        case <br/> => Nil
+        case <p>{items @ _*}</p>       => strip(items)
+        case <span>{items @ _*}</span> => strip(items)
+        case <div>{items @ _*}</div>   => strip(items)
+        case it => Seq(it)
+      }
+      val doc = utils.loadXML(url)
+      val utils.published_reg(pDateStr,pMonthStr,pYearStr,_) = (doc \\ "span").find(it => (it \ "@itemprop").text == "datePublished").get.text
+      val pDate = new DateTime(2000+pYearStr.toInt, pMonthStr.toInt, pDateStr.toInt,0,0, DateTimeZone.forID("Europe/Sofia"))
+
+      val news_title = (doc \\ "div").find(it => (it \ "@class").text == "news_title").get
+      val (dayNode, postedNode, cont) = news_title match { case <div>{_}<h1>{day @ _*}</h1>{_}<div>{date @ _*}</div>{_}<div>{cont @ _*}</div>{w @ _*}</div> => (day, date, cont)}
+      val utils.day_reg(dayStr, dateStr, monthStr) = dayNode.text
+
+      val datetime = {
+        val candidate = new DateTime(2000+pYearStr.toInt, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+        if (candidate.isAfter(pDate)) candidate
+        else new DateTime(2000+pYearStr.toInt+1, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+      }
+
+      val cont_flat = strip(cont)
+      val locations = cont_flat.foldLeft((List.empty[Int],0))((acc,it) => it match { case <b>{_}{some @ _*}</b> => (acc._2-1 :: acc._1, acc._2+1) case _ => (acc._1, acc._2+1) })._1.reverse.drop(1)
+      val location_splits = locations.zip(locations.drop(1) ++ List(cont_flat.size))
+      val items = location_splits.map(it => cont_flat.drop(it._1).take(it._2-it._1))
+      items.map{ case date :: title :: details =>
+        val (t1, t2) = date.text match {
+          case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
+          case _ => (0,0)
+        }
+        Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
+      }
+    }
+
   }
 
   object Horizont extends Station(

@@ -23,7 +23,8 @@ libraryDependencies ++= {
     "io.spray" % "spray-can_2.11" % sprayVersion,
     "io.spray" % "spray-routing_2.11" % sprayVersion,
     "io.spray" % "spray-testkit_2.11" % sprayVersion,
-    "io.spray" % "spray-client_2.11" % sprayVersion
+    "io.spray" % "spray-client_2.11" % sprayVersion,
+    "com.github.t3hnar" % "scala-bcrypt_2.11" % "2.5"
 
     //"org.scala-lang.modules" % "scala-xml_2.11" % "1.0.3"
     //"org.scalatest" % "scalatest_2.11" % "2.2.1" % "test",
