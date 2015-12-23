@@ -349,10 +349,31 @@ object Scheduler {
       "-S" -> "192.168.1.10:1080"
     ))
   ) {
-    def programa = List.empty[Article]  //bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
+    def programa = {
+      val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
+      val articles = 0.to(6).flatMap{step =>
+        val date = today.plusDays(step)
+        programaDaily(date.year().get,date.monthOfYear().get,date.dayOfMonth().get)
+      }.toList.sorted
+      (articles.zip(articles.tail ++ List(Article(this, today, today,"","",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
+    }
+
+    def programaDaily(year: Int, month: Int, day: Int) = {
+      val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/index/$year/$month/$day/")
+      val list = (dailyDoc \\ "ul").find(it => (it \ "@class").text == "timeline novatv").head \ "li"
+      val datetime = new DateTime(year, month, day, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+      list.foldLeft((List.empty[Article],datetime)) { (acc, it) => it match {
+        case <li>{_}<div>{time}</div>{_}<a>{title}</a>{items @ _*}</li> =>
+          val utils.time_hh_mm(h,m) = time.text
+          val start = datetime.plusMinutes(h.toInt*60+m.toInt)
+          val startAdjusted = if (start.isBefore(acc._2)) start.plusDays(1)
+          else start
+          (Article(this, startAdjusted, datetime, title.text, title.text, None) :: acc._1, startAdjusted)
+      }}._1
+    }
   }
 
-  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev)
+  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev, NovaTV.name -> NovaTV)
 
   def refreshAll = {
     val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
