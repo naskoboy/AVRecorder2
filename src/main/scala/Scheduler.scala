@@ -95,12 +95,12 @@ object utils extends LazyLogging  {
     Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
   }
-
+/*
   def executeCommand(cmd: String, mystdout: StringBuilder, mystderr: StringBuilder) = {
     import sys.process._
     Process(cmd) ! ProcessLogger(it => { mystdout append (it+"\n") }, it => { mystderr append (it+"\n")})
   }
-
+*/
   val rtmpVideoRecorder = (params: Map[String,String]) => (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
     val fullFileName = article.getFullFilename + ".flv"
