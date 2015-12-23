@@ -9,6 +9,7 @@ import nasko.avrecorder.api.ApiBoot
 import org.joda.time.format.DateTimeFormat
 import org.joda.time.{Seconds, Minutes, DateTimeZone, DateTime}
 import org.slf4j.LoggerFactory
+import scala.collection.mutable.StringBuilder
 import scala.util.{Failure, Success, Try}
 import scala.xml.Node
 
@@ -34,7 +35,6 @@ object utils extends LazyLogging  {
   val HM_format = DateTimeFormat.forPattern("HH:mm")
 
   val config = ConfigFactory.load()
-  val vlc = config.getString("vlc")
 
   val bgAlphabet = " 0123456789АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЬЪЮЯабвгдежзийклмнопрстуфхцчшщьъюя"
   val engAlphabet = Array(
@@ -62,11 +62,9 @@ object utils extends LazyLogging  {
 
   val audioRecorder = (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
-    val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
-    val filename = s"${article.station.prefix}_${utils.getFixedString(article.title)}_${timestamp_format.print(article.start)}"
-    val fullFileName = s"""${article.station.destination}\\$filename.mp3"""
+    val fullFileName = article.getFullFilename + ".mp3"
     import sys.process._
-    val cmd = s""""${utils.vlc}" ${article.station.url} --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
+    val cmd = s""""${config.getString("vlc")}" ${article.station.url} --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
     logger.info(cmd)
     val process = cmd.run
     Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.padding*60))
@@ -94,6 +92,30 @@ object utils extends LazyLogging  {
     val file = AudioFileIO.read(new File(fullFileName))
     file.setTag(tag)
     file.commit
+    Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
+    ()
+  }
+
+  def executeCommand(cmd: String, mystdout: StringBuilder, mystderr: StringBuilder) = {
+    import sys.process._
+    Process(cmd) ! ProcessLogger(it => { mystdout append (it+"\n") }, it => { mystderr append (it+"\n")})
+  }
+
+  val rtmpVideoRecorder = (params: Map[String,String]) => (article: Article) => Try {
+    Station.ledger.synchronized{ Station.ledger += article->Status.Running }
+    val fullFileName = article.getFullFilename + ".flv"
+    val fullFileNameTmp = fullFileName + ".tmp"
+    import sys.process._
+    val cmd = s""""${config.getString("rtmpdump")}" -v --quiet --stop 14400 --timeout 240 -o "$fullFileNameTmp" ${params.map(it => s"${it._1} ${it._2}").mkString(" ")}"""
+    logger.info(cmd)
+    val process = cmd.run
+    // can't capture rtmp-errors
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.padding*60))
+    process.destroy()
+    // http://yamdi.sourceforge.net/
+    s""""${config.getString("yamdi")}" -i "$fullFileNameTmp" -o "$fullFileName" -w""".run.exitValue() // wait until completes
+    if (!new File(fullFileNameTmp).delete()) logger.warn(s"Failed to delete $fullFileNameTmp")
+    logger.info(s"$fullFileName COMPLETED")
     Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
   }
@@ -127,6 +149,9 @@ case class Article(station: Station, start: DateTime, end: DateTime, minimalTitl
     val corr = this.correspondence(it)
     if (corr > acc._1) (corr, Some(it)) else acc
   }._2
+
+  private val timestamp_format = DateTimeFormat.forPattern("yyMMdd_HHmm")
+  def getFullFilename = s"""${station.destination}\\${station.prefix}_${utils.getFixedString(title)}_${timestamp_format.print(start)}"""
 
 }
 
@@ -305,6 +330,26 @@ object Scheduler {
     utils.audioRecorder
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
+  }
+
+  object NovaTV extends Station(
+    config.getString("stations.NovaTV.name"),
+    config.getString("stations.NovaTV.prefix"),
+    "stations.NovaTV.url",
+    config.getString("stations.NovaTV.destination"),
+    config.getInt("stations.NovaTV.padding"),
+    utils.rtmpVideoRecorder(Map(
+      "-r" -> "rtmp://e1.cdn.bg:2060/fls",
+      "-a" -> "fls",
+      "-f" -> "WIN 11,7,700,224",
+      "-W" -> "http://i.cdn.bg/eflash/jwNTV/jplayer.swf",
+      "-p" -> "http://i.cdn.bg/live/0OmMKJ4SgY",
+      "-y" -> "ntv_1.stream",
+      "-T" -> "N0v4TV6#2",
+      "-S" -> "192.168.1.10:1080"
+    ))
+  ) {
+    def programa = List.empty[Article]  //bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
   }
 
   val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev)
