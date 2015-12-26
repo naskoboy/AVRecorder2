@@ -120,7 +120,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
                 utils.ymdHMs_format.print(Scheduler.nextRefreshTime)
               }</td></tr><tr><td>Refresh results</td><td> ${
                 Scheduler.refreshResults.map{
-                  case (station, Success(res)) => station.name + " => " + res
+                  case (station, Success(res)) => s"""<a href="/api/status?station=${station.name}&format=html&details=true">${station.name}</a> => $res"""
                   case (station, Failure(e)) => station.name + " => " + e
                 }
               }</td></tr>${

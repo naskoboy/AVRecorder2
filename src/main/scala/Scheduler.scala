@@ -7,7 +7,7 @@ import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.{Logger, LazyLogging}
 import nasko.avrecorder.api.ApiBoot
 import org.joda.time.format.DateTimeFormat
-import org.joda.time.{Seconds, Minutes, DateTimeZone, DateTime}
+import org.joda.time._
 import org.slf4j.LoggerFactory
 import scala.collection.mutable.StringBuilder
 import scala.util.{Failure, Success, Try}
@@ -118,6 +118,14 @@ object utils extends LazyLogging  {
     logger.info(s"$fullFileName COMPLETED")
     Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
+  }
+
+  def adjustArticles(articles: Seq[Article]) = {
+    val list = articles.foldLeft((List.empty[Article], DateTime.now.minusYears(1))){ (acc, it) =>
+      if (it.start.isAfter(acc._2)) (it :: acc._1, it.start)
+      else (it.copy(start = it.start.plusDays(1)) :: acc._1, it.start.plusDays(1))
+    }._1.reverse
+    (list.zip(list.tail)).map{ case (a1,a2) => a1.copy(end = a2.start) }
   }
 
 }
@@ -294,16 +302,16 @@ object Scheduler {
       }
       val doc = utils.loadXML(url)
       val utils.published_reg(pDateStr,pMonthStr,pYearStr,_) = (doc \\ "span").find(it => (it \ "@itemprop").text == "datePublished").get.text
-      val pDate = new DateTime(2000+pYearStr.toInt, pMonthStr.toInt, pDateStr.toInt,0,0, DateTimeZone.forID("Europe/Sofia"))
+      val pDate = new DateTime(2000+pYearStr.toInt, pMonthStr.toInt, pDateStr.toInt,0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
 
       val news_title = (doc \\ "div").find(it => (it \ "@class").text == "news_title").get
       val (dayNode, postedNode, cont) = news_title match { case <div>{_}<h1>{day @ _*}</h1>{_}<div>{date @ _*}</div>{_}<div>{cont @ _*}</div>{w @ _*}</div> => (day, date, cont)}
       val utils.day_reg(dayStr, dateStr, monthStr) = dayNode.text
 
       val datetime = {
-        val candidate = new DateTime(2000+pYearStr.toInt, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+        val candidate = new DateTime(2000+pYearStr.toInt, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
         if (candidate.isAfter(pDate)) candidate
-        else new DateTime(2000+pYearStr.toInt+1, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+        else new DateTime(2000+pYearStr.toInt+1, utils.months.indexOf(monthStr)+1, dateStr.toInt, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
       }
 
       val cont_flat = strip(cont)
@@ -332,6 +340,34 @@ object Scheduler {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
   }
 
+  object BntWorld extends Station(
+    config.getString("stations.BntWorld.name"),
+    config.getString("stations.BntWorld.prefix"),
+    config.getString("stations.BntWorld.url"),
+    config.getString("stations.BntWorld.destination"),
+    config.getInt("stations.BntWorld.padding"),
+    utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
+  ) {
+
+    def programa = {
+      //val daysOfWeek = Seq("ponedelnik", "vtornik", "srqda", "chetvurtuk", "petuk", "subota", "nedelq")
+      val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
+      val doc = utils.loadXML( """http://bnt.bg/programata""")
+      val dayReg = """(.*) (.*) (\d\d\d\d) (.*)""".r
+      (doc \\ "li").filter(it => (it \ "@class").text == "programDays" && (it \ "@id").text.endsWith("_w")).flatMap{ it =>
+        val items = (it\\"div").filter{ it => (it\"@class").text=="programInnerWholeCell"}
+        val dayReg(dayStr, monthStr, yearStr,_) = (items.head\\"div").find(it2 => (it2\"@class").text=="programInnerNameInfo").get.text
+        val day = new DateTime(yearStr.toInt, utils.months.indexOf(monthStr)+1, dayStr.toInt, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
+        if (day.isBefore(today)) Nil
+        else utils.adjustArticles(items.tail.map{
+          case <div>{_}<div>{timeStr}</div>{_}{titleStr @ _*}</div> =>
+            val (utils.time_hh_mm(h,m), title) = (timeStr.text, titleStr.text.trim)
+            Article(this, day.plusMinutes(h.toInt * 60 + m.toInt), day, title, title, None)
+        })
+      }.toList
+    }
+  }
+
   object NovaTV extends Station(
     config.getString("stations.NovaTV.name"),
     config.getString("stations.NovaTV.prefix"),
@@ -355,25 +391,24 @@ object Scheduler {
         val date = today.plusDays(step)
         programaDaily(date.year().get,date.monthOfYear().get,date.dayOfMonth().get)
       }.toList.sorted
-      (articles.zip(articles.tail ++ List(Article(this, today, today,"","",None)))).map{ case (a1,a2) =>  a1.copy(end = a2.start) }
+      (articles.zip(articles.tail ++ List(Article(this, today, today,"","",None)))).map{ case (a1,a2) => a1.copy(end = a2.start) }
     }
 
     def programaDaily(year: Int, month: Int, day: Int) = {
       val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/index/$year/$month/$day/")
       val list = (dailyDoc \\ "ul").find(it => (it \ "@class").text == "timeline novatv").head \ "li"
-      val datetime = new DateTime(year, month, day, 0, 0, DateTimeZone.forID("Europe/Sofia"))
+      val datetime = new DateTime(year, month, day, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
       list.foldLeft((List.empty[Article],datetime)) { (acc, it) => it match {
         case <li>{_}<div>{time}</div>{_}<a>{title}</a>{items @ _*}</li> =>
           val utils.time_hh_mm(h,m) = time.text
           val start = datetime.plusMinutes(h.toInt*60+m.toInt)
-          val startAdjusted = if (start.isBefore(acc._2)) start.plusDays(1)
-          else start
+          val startAdjusted = if (start.isBefore(acc._2)) start.plusDays(1) else start
           (Article(this, startAdjusted, datetime, title.text, title.text, None) :: acc._1, startAdjusted)
       }}._1
     }
   }
 
-  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev, NovaTV.name -> NovaTV)
+  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev, NovaTV.name -> NovaTV, BntWorld.name -> BntWorld)
 
   def refreshAll = {
     val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
@@ -386,8 +421,9 @@ object Scheduler {
     writer.write(picks.map(it => s"${it._1} ${it._2}\n").mkString)
     writer.close()
 
+    import collection.JavaConversions._
     refreshResults = for (
-      selected <- utils.config.getString("active_stations").split(",");
+      selected <- utils.config.getStringList("active_stations").toList;
       station <- stations.values
       if (station.name == selected)
     ) yield (station, station.refresh(start, end, picks))
@@ -395,7 +431,7 @@ object Scheduler {
     end
   }
 
-  def main(args: Array[String]) = {
+  def main(args: Array[String]): Unit = {
     new Thread { override def run = ApiBoot.main(Array())}.start
 
     while(true) {
