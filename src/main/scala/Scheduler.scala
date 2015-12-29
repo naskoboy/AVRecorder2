@@ -10,6 +10,8 @@ import org.joda.time.format.DateTimeFormat
 import org.joda.time._
 import org.slf4j.LoggerFactory
 import scala.collection.mutable.StringBuilder
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.{Failure, Success, Try}
 import scala.xml.Node
 
@@ -67,7 +69,7 @@ object utils extends LazyLogging  {
     val cmd = s""""${config.getString("vlc")}" ${article.station.url} --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
     logger.info(cmd)
     val process = cmd.run
-    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.padding*60))
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
     process.destroy()
     logger.info(s"$fullFileName COMPLETED")
 
@@ -110,7 +112,7 @@ object utils extends LazyLogging  {
     logger.info(cmd)
     val process = cmd.run
     // can't capture rtmp-errors
-    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.padding*60))
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
     process.destroy()
     // http://yamdi.sourceforge.net/
     s""""${config.getString("yamdi")}" -i "$fullFileNameTmp" -o "$fullFileName" -w""".run.exitValue() // wait until completes
@@ -176,7 +178,8 @@ abstract class Station(
   val prefix: String,
   val url: String,
   val destination: String,
-  val padding: Int,
+  val leftPadding: Int,
+  val rightPadding: Int,
   recorder: Article => Try[Unit]
 ) {
 
@@ -207,7 +210,7 @@ abstract class Station(
       val res = recorder(article)
       if (Scheduler.shutdown && !Station.ledger.values.exists(_ == Status.Running)) System.exit(0)
       res
-    }}, article.start.getMillis - System.currentTimeMillis, TimeUnit.MILLISECONDS)
+    }}, article.start.getMillis - System.currentTimeMillis - article.station.leftPadding*60*1000L, TimeUnit.MILLISECONDS)
     Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled}
     utils.logger.info(s"scheduled $name $article")
   }
@@ -280,7 +283,8 @@ object Scheduler {
       config.getString("stations.HristoBotev.prefix"),
       config.getString("stations.HristoBotev.url"),
       config.getString("stations.HristoBotev.destination"),
-      config.getInt("stations.HristoBotev.padding"),
+      config.getInt("stations.HristoBotev.leftPadding"),
+      config.getInt("stations.HristoBotev.rightPadding"),
       utils.audioRecorder
   ) {
     def programa = {
@@ -334,7 +338,8 @@ object Scheduler {
     config.getString("stations.Horizont.prefix"),
     config.getString("stations.Horizont.url"),
     config.getString("stations.Horizont.destination"),
-    config.getInt("stations.Horizont.padding"),
+    config.getInt("stations.Horizont.leftPadding"),
+    config.getInt("stations.Horizont.rightPadding"),
     utils.audioRecorder
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
@@ -345,7 +350,8 @@ object Scheduler {
     config.getString("stations.BntWorld.prefix"),
     config.getString("stations.BntWorld.url"),
     config.getString("stations.BntWorld.destination"),
-    config.getInt("stations.BntWorld.padding"),
+    config.getInt("stations.BntWorld.leftPadding"),
+    config.getInt("stations.BntWorld.rightPadding"),
     utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
   ) {
 
@@ -373,7 +379,8 @@ object Scheduler {
     config.getString("stations.NovaTV.prefix"),
     "stations.NovaTV.url",
     config.getString("stations.NovaTV.destination"),
-    config.getInt("stations.NovaTV.padding"),
+    config.getInt("stations.NovaTV.leftPadding"),
+    config.getInt("stations.NovaTV.rightPadding"),
     utils.rtmpVideoRecorder(Map(
       "-r" -> "rtmp://e1.cdn.bg:2060/fls",
       "-a" -> "fls",
@@ -387,28 +394,20 @@ object Scheduler {
   ) {
     def programa = {
       val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
-      val articles = 0.to(6).flatMap{step =>
+      utils.adjustArticles(0.to(6).flatMap{step =>
         val date = today.plusDays(step)
-        programaDaily(date.year().get,date.monthOfYear().get,date.dayOfMonth().get)
-      }.toList.sorted
-      (articles.zip(articles.tail ++ List(Article(this, today, today,"","",None)))).map{ case (a1,a2) => a1.copy(end = a2.start) }
-    }
-
-    def programaDaily(year: Int, month: Int, day: Int) = {
-      val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/index/$year/$month/$day/")
-      val list = (dailyDoc \\ "ul").find(it => (it \ "@class").text == "timeline novatv").head \ "li"
-      val datetime = new DateTime(year, month, day, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
-      list.foldLeft((List.empty[Article],datetime)) { (acc, it) => it match {
-        case <li>{_}<div>{time}</div>{_}<a>{title}</a>{items @ _*}</li> =>
-          val utils.time_hh_mm(h,m) = time.text
-          val start = datetime.plusMinutes(h.toInt*60+m.toInt)
-          val startAdjusted = if (start.isBefore(acc._2)) start.plusDays(1) else start
-          (Article(this, startAdjusted, datetime, title.text, title.text, None) :: acc._1, startAdjusted)
-      }}._1
+          val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/index/${date.year().get}/${date.monthOfYear().get}/${date.dayOfMonth().get}/")
+          val list = (dailyDoc \\ "ul").find(it => (it \ "@class").text == "timeline novatv").head \ "li"
+          list.map{
+            case <li>{_}<div>{timeStr}</div>{_}<a>{titleStr}</a>{items @ _*}</li> =>
+              val (utils.time_hh_mm(h,m), title) = (timeStr.text, titleStr.text)
+              Article(this, date.plusMinutes(h.toInt*60+m.toInt), date, title, title, None)
+          }
+      })
     }
   }
 
-  val stations = Map(Horizont.name -> Horizont, HristoBotev.name -> HristoBotev, NovaTV.name -> NovaTV, BntWorld.name -> BntWorld)
+  val stations = Seq(Horizont, HristoBotev, NovaTV, BntWorld)
 
   def refreshAll = {
     val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
@@ -422,17 +421,18 @@ object Scheduler {
     writer.close()
 
     import collection.JavaConversions._
-    refreshResults = for (
-      selected <- utils.config.getStringList("active_stations").toList;
-      station <- stations.values
-      if (station.name == selected)
-    ) yield (station, station.refresh(start, end, picks))
+
+    refreshResults = utils.config.getStringList("active_stations").toList.map{ name =>
+      val station = stations.find(_.name==name).get
+      (station, station.refresh(start, end, picks))
+    }
     refreshTime = start
     end
   }
 
   def main(args: Array[String]): Unit = {
     new Thread { override def run = ApiBoot.main(Array())}.start
+//    Future { ApiBoot.main(Array()) }
 
     while(true) {
       nextRefreshTime = refreshAll

@@ -49,16 +49,16 @@ class ApiActor extends Actor with HttpService with Authenticator {
       path("programa") {
         parameters('station) { stationStr =>
           complete {
-            Scheduler.stations(stationStr).programa.mkString("\n")
+            Scheduler.stations.find(_.name==stationStr).get.programa.mkString("\n")
           }
         }
       } ~
       path("picked") {
-        parameters('station) { station =>
+        parameters('station) { stationStr =>
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
           val end = start.plusDays(7)
           complete {
-            Scheduler.stations(station).pick(start, end).mkString("\n")
+            Scheduler.stations.find(_.name==stationStr).get.pick(start, end).mkString("\n")
           }
         }
       } ~
@@ -88,23 +88,24 @@ class ApiActor extends Actor with HttpService with Authenticator {
           val recordPermission = authInfo.hasPermission("Record")
           val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(utils.config.getInt("ledger_retention")))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
           val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
+          //val current = list.find(it => (stationO==None || stationO.get==it._1.station.name) && it._1.start.isBeforeNow && it._1.end.isAfterNow)
           val detailsFlag = details.getOrElse("false").toBoolean
           if (format.getOrElse("text")=="html") { ctx => respondWithMediaType(MediaTypes.`text/html`) {
             complete {
               val params = ctx.request.uri.query.toString
               list.map{ case (article,status) => s"""<tr style="background-color: ${
-                status match {
-                  case Status.Completed => "LightBlue"
-                  case Status.Running => "yellow"
-                  case Status.Picked => "aqua"
-                  case Status.Scheduled => "orange"
+                (status, article==current) match {
+                  case (Status.Completed  ,_) => "LightBlue"
+                  case (Status.Running    ,_) => "yellow"
+                  case (Status.Picked     ,_) => "aqua"
+                  case (Status.Scheduled  ,_) => "orange"
+                  case (_, true) => "Silver"
                   case _ => ""
                 }
               }"><td>${
                 article.station.name}</td><td>${
                 utils.ymdHM_format.print(article.start)}</td><td>${
                 utils.ymdHM_format.print(article.end)}</td><td>${
-                (if (article==current) ">>>   " else "") +
                 article.title +
                   (if (recordPermission && status==Status.Registered) s"""  <a href="/api/pick?station=${article.station.name}&startMillis=${article.start.getMillis}&forwardParams=${URLEncoder.encode(params,"UTF-8")}"> Record</a>"""
                   else "")
@@ -112,7 +113,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
                 if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
               }<td>${
                 status
-              }</td></tr></b>"""}.mkString(s"""<html><body><p><table border="1"><tr><td>BG time</td><td> ${
+              }</td></tr></b>"""}.mkString(s"""<html><body><form action="/api/status" method="get"><p><table border="1"><tr><td>BG time</td><td> ${
                 utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))
               }</td></tr><tr><td>Last Refresh time</td><td> ${
                 utils.ymdHMs_format.print(Scheduler.refreshTime)
@@ -125,36 +126,14 @@ class ApiActor extends Actor with HttpService with Authenticator {
                 }
               }</td></tr>${
                 if (Scheduler.shutdown) "<tr><td>Shutdown PENDING</td></tr>"
-              }</table><img src=/images/PoweredBy.jpg><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","</table></body></html>")
+              }</td/tr><tr><td>${
+                //Scheduler.stations.map(st => s"""<input type="checkbox" name="station" value="${st.name}"> ${st.name}<br>""").mkString
+              }</td></tr></table><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","""</table></form></body></html>""")
             }
-          }.apply(ctx)} else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
+          }.apply(ctx)}
+          else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
           }}
       }}
-/*
-      path("request") {
-        parameters('article) { articleStr =>
-          val reg1 = """([^ ]*)""".r
-          val reg2 = """([^ ]*) (\d{1,2})""".r
-          val (station, article) =
-          articleStr match {
-            case reg1(stationStr,h1,m1,h2,m2) =>
-              val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withTimeAtStartOfDay()
-              var start = today.plusMinutes(h1.toInt*60+m1.toInt)
-              var end   = today.plusMinutes(h2.toInt*60+m2.toInt)
-              if (start.isBeforeNow) { start = start.plusDays(1) ; end = end.plusDays(1) }
-              val station = Scheduler.stations(stationStr)
-              (station, Article(station, start, end, "title", "title", None))
-            case reg2(stationStr,duration) =>
-              val now = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
-              val station = Scheduler.stations(stationStr)
-              (station, Article(station, now, now.plusMinutes(duration.toInt), "Requested", "title", None))
-          }
-          station.schedule(article)
-          Station.ledger.synchronized{ Station.ledger += article->Status.Scheduled}
-          complete { "Request accepted." }
-        }
-      }
-*/
       // !!!could be buggy !!!
       //path("refresh") { complete { "Refresh completed." + Scheduler.refreshAll} }
   })
