@@ -2,6 +2,8 @@ import sbt.Keys._
 //import AssemblyKeys._ // put this at the top of the file
 assemblySettings
 
+lazy val root = Project("avrecorder2", file(".")).enablePlugins(SbtTwirl)
+
 name := "AVRecorder2"
 version := "1.0"
 scalaVersion := "2.11.7"
@@ -32,3 +34,5 @@ libraryDependencies ++= {
     //"com.mpatric" % "mp3agic" % "0.8.3"
   )
 }
+
+//javaOptions += """-Dconfig.file=C:\Users\nasko\IdeaProjects\AVRecorder2\application.conf"""

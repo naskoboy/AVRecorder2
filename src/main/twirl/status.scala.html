@@ -1,0 +1,63 @@
+@import nasko.avrecorder._
+@import org.joda.time._
+@import scala.util.{Failure, Success, Try}
+
+@(station: List[String], status: List[String], params: Map[String, List[String]], authInfo: AuthInfo)
+<html><body><form>
+    <img src=/images/PoweredBy.jpg>
+    <input name ="action" type="submit" value="Refresh">
+    <table>
+        <td><table border="1" bordercolor="#000000">
+            @for(item <- Scheduler.refreshResults) {
+                <tr><td><input type="checkbox" name="station" value="@{item._1.name}" @{station.find(_==item._1.name).map(_ => "checked")}> @{item._1.name} => @{
+                    item._2 match {
+                        case Success(res) => res
+                        case Failure(e) => e
+                    }
+                }</td></tr>
+            }
+        </table></td>
+        <td><table border="1" bordercolor="#000000">
+            <tr><td><input type="checkbox" name="status" value="Registered" @{status.find(_=="Registered").map(_ => "checked")}>Registered</td></tr>
+            <tr><td><input type="checkbox" name="status" value="Picked"    @{status.find(_=="Picked"     ).map(_ => "checked")}>Picked</td></tr>
+            <tr><td><input type="checkbox" name="status" value="Scheduled" @{status.find(_=="Scheduled"  ).map(_ => "checked")}>Scheduled</td></tr>
+            <tr><td><input type="checkbox" name="status" value="Running"   @{status.find(_=="Running"    ).map(_ => "checked")}>Running</td></tr>
+            <tr><td><input type="checkbox" name="status" value="Completed" @{status.find(_=="Completed"  ).map(_ => "checked")}>Completed</td></tr>
+        </table></td>
+        <td><table border="1" bordercolor="#000000">
+            <tr><td>BG Time</td><td>@{DateTime.now(DateTimeZone.forID("Europe/Sofia")).toString(utils.ymdHM_format)}</td></tr>
+            <tr><td>Last Refresh time</td><td> @{utils.ymdHMs_format.print(Scheduler.refreshTime)}</td></tr>
+            <tr><td>Next Refresh time</td><td> @{utils.ymdHMs_format.print(Scheduler.nextRefreshTime)}</td></tr>
+            @{
+                if (Scheduler.shutdown) "<tr><td>Shutdown PENDING</td></tr>"
+            }
+        </table></td>
+    </table>
+    <table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3">
+        <tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td><td>DETAILS</td><td>STATUS</td></tr>
+        @for(item <- Station.ledger.toList.filter(it => station.indexOf(it._1.station.name)>=0 && status.indexOf(it._2.toString)>=0).sortWith((a,b) => a._1.station.name<b._1.station.name || (a._1.station.name==b._1.station.name && a._1.start.getMillis<b._1.start.getMillis))) {
+            <tr style="background-color: @{
+                //val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
+                (item._2, false) match {
+                    case (Status.Completed  ,_) => "LightBlue"
+                    case (Status.Running    ,_) => "yellow"
+                    case (Status.Picked     ,_) => "aqua"
+                    case (Status.Scheduled  ,_) => "orange"
+                    case (_, true) => "Silver"
+                    case _ => ""
+                }
+
+            }">
+                <td>@item._1.station.name</td>
+                <td>@item._1.start.toString(utils.ymdHMs_format)</td>
+                <td>@item._1.end.toString(utils.ymdHMs_format)</td>
+                <td>@item._1.title
+                @{if (authInfo.hasPermission("Record") && item._2==Status.Registered) new Html(s"""<input name ="record ${item._1.station.name} ${item._1.start.getMillis}" type="submit" value="Record">""")}
+                </td>
+                <td>@item._1.details</td>
+                <td>@item._2</td>
+            </tr>
+        }
+</table>
+</form></body>
+</html>

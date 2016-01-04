@@ -13,7 +13,7 @@ import spray.http.{MediaTypes, StatusCodes}
 import spray.routing.{HttpService, ExceptionHandler}
 import spray.util.LoggingContext
 
-import scala.util.{Failure, Success}
+import scala.util.{Try, Failure, Success}
 
 /**
  * Created by nasko on 12/15/2015.
@@ -62,6 +62,31 @@ class ApiActor extends Actor with HttpService with Authenticator {
           }
         }
       } ~
+      path("status") { authenticate(basicUserAuthenticator) { authInfo => { ctx =>
+        if (!authInfo.hasPermission("Record")) throw new RuntimeException("Not authorized")
+        //val params = ctx.request.message.uri.query.toMap
+        //println(ctx.request.message.uri.query.toMap)
+        val station = Try{ctx.request.message.uri.query.getAll("station")} match { case Success(st) if (st!=Nil) => st case _ => List("HristoBotev") }
+        val status  = Try{ctx.request.message.uri.query.getAll("status" )} match { case Success(st) if (st!=Nil) => st case _ => List("Completed","Picked","Registered","Running","Scheduled") }
+        val params = ctx.request.message.uri.query.toMultiMap
+        println(params)
+        params.keys.find(_.startsWith("record")).map{ str  =>
+          val Array(_, station, startMillisStr) = str.split(" ")
+          val startMillis = startMillisStr.toLong
+          Station.ledger.synchronized {
+            Station.ledger.keys.find { a => a.station.name == station && a.start.getMillis == startMillis }.map { article =>
+              if (Station.ledger(article) == Status.Registered) {
+                scala.tools.nsc.io.File(utils.config.getString("picks")).appendAll(s"$station $startMillisStr\n")
+                if (startMillis < Scheduler.nextRefreshTime.getMillis) article.station.schedule(article)
+                else Station.ledger += article -> Status.Picked
+              }
+            }
+          }
+        }
+        respondWithMediaType(MediaTypes.`text/html`) { complete {
+          html.status.render(station, status, params, authInfo).toString
+      }}.apply(ctx)
+      }}} ~
       path("pick") { authenticate(basicUserAuthenticator) { authInfo =>
       if (!authInfo.hasPermission("Record")) throw new RuntimeException("Not authorized")
         parameters('station, 'startMillis, 'forwardParams) { (station, startMillisStr, forwardParams) =>
@@ -83,7 +108,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
           "Recording in  progress. Shutdown pending."
         }
       }}} ~
-      path("status") { authenticate(basicUserAuthenticator) { authInfo =>
+      path("statusold") { authenticate(basicUserAuthenticator) { authInfo =>
         parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
           val recordPermission = authInfo.hasPermission("Record")
           val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(utils.config.getInt("ledger_retention")))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
