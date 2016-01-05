@@ -396,7 +396,7 @@ object Scheduler {
       val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
       utils.adjustArticles(0.to(6).flatMap{step =>
         val date = today.plusDays(step)
-          val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/status/${date.year().get}/${date.monthOfYear().get}/${date.dayOfMonth().get}/")
+          val dailyDoc = utils.loadXML(s"http://novatv.bg/schedule/index/${date.year().get}/${date.monthOfYear().get}/${date.dayOfMonth().get}/")
           val list = (dailyDoc \\ "ul").find(it => (it \ "@class").text == "timeline novatv").head \ "li"
           list.map{
             case <li>{_}<div>{timeStr}</div>{_}<a>{titleStr}</a>{items @ _*}</li> =>

@@ -9,6 +9,7 @@ import akka.routing.RoundRobinPool
 import nasko.avrecorder._
 import org.joda.time.{DateTimeZone, DateTime}
 import spray.can.Http
+import spray.http.Uri.Query
 import spray.http.{MediaTypes, StatusCodes}
 import spray.routing.{HttpService, ExceptionHandler}
 import spray.util.LoggingContext
@@ -64,12 +65,12 @@ class ApiActor extends Actor with HttpService with Authenticator {
       } ~
       path("status") { authenticate(basicUserAuthenticator) { authInfo => { ctx =>
         if (!authInfo.hasPermission("Record")) throw new RuntimeException("Not authorized")
+        val query = ctx.request.message.uri.query
         //val params = ctx.request.message.uri.query.toMap
-        //println(ctx.request.message.uri.query.toMap)
-        val station = Try{ctx.request.message.uri.query.getAll("station")} match { case Success(st) if (st!=Nil) => st case _ => List("HristoBotev") }
-        val status  = Try{ctx.request.message.uri.query.getAll("status" )} match { case Success(st) if (st!=Nil) => st case _ => List("Completed","Picked","Registered","Running","Scheduled") }
-        val params = ctx.request.message.uri.query.toMultiMap
-        println(params)
+        val station = Try{query.getAll("station")} match { case Success(st) if (st!=Nil) => st case _ => List("HristoBotev") }
+        val status  = Try{query.getAll("status" )} match { case Success(st) if (st!=Nil) => st case _ => List("Completed","Picked","Registered","Running","Scheduled") }
+        val details = query.get("details").getOrElse("off").equalsIgnoreCase("ON")
+        val params = query.toMultiMap
         params.keys.find(_.startsWith("record")).map{ str  =>
           val Array(_, station, startMillisStr) = str.split(" ")
           val startMillis = startMillisStr.toLong
@@ -84,7 +85,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
           }
         }
         respondWithMediaType(MediaTypes.`text/html`) { complete {
-          html.status.render(station, status, params, authInfo).toString
+          html.status.render(station, status, params, authInfo, details).toString
       }}.apply(ctx)
       }}} ~
       path("pick") { authenticate(basicUserAuthenticator) { authInfo =>
@@ -107,58 +108,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
           Scheduler.shutdown = true
           "Recording in  progress. Shutdown pending."
         }
-      }}} ~
-      path("statusold") { authenticate(basicUserAuthenticator) { authInfo =>
-        parameters('station.?, 'format.?, 'details.?) { (stationO,format,details) => {
-          val recordPermission = authInfo.hasPermission("Record")
-          val list = Station.ledger.synchronized{ Station.ledger.filterKeys(it => (stationO==None || stationO.get==it.station.name) && it.start.isAfter(DateTime.now.minusHours(utils.config.getInt("ledger_retention")))).toSeq.sortWith((a,b) => a._1.compare(b._1) == -1)}
-          val current = list.map(_._1).filter(it => it.start.isAfterNow || it.end.isAfterNow).min
-          //val current = list.find(it => (stationO==None || stationO.get==it._1.station.name) && it._1.start.isBeforeNow && it._1.end.isAfterNow)
-          val detailsFlag = details.getOrElse("false").toBoolean
-          if (format.getOrElse("text")=="html") { ctx => respondWithMediaType(MediaTypes.`text/html`) {
-            complete {
-              val params = ctx.request.uri.query.toString
-              list.map{ case (article,status) => s"""<tr style="background-color: ${
-                (status, article==current) match {
-                  case (Status.Completed  ,_) => "LightBlue"
-                  case (Status.Running    ,_) => "yellow"
-                  case (Status.Picked     ,_) => "aqua"
-                  case (Status.Scheduled  ,_) => "orange"
-                  case (_, true) => "Silver"
-                  case _ => ""
-                }
-              }"><td>${
-                article.station.name}</td><td>${
-                utils.ymdHM_format.print(article.start)}</td><td>${
-                utils.ymdHM_format.print(article.end)}</td><td>${
-                article.title +
-                  (if (recordPermission && status==Status.Registered) s"""  <a href="/api/pick?station=${article.station.name}&startMillis=${article.start.getMillis}&forwardParams=${URLEncoder.encode(params,"UTF-8")}"> Record</a>"""
-                  else "")
-              }</td>${
-                if (detailsFlag) s"<td>${article.details.getOrElse("").replace("\n","<br>")}</td>" else ""
-              }<td>${
-                status
-              }</td></tr></b>"""}.mkString(s"""<html><body><form action="/api/status" method="get"><p><table border="1"><tr><td>BG time</td><td> ${
-                utils.ymdHM_format.print(DateTime.now(DateTimeZone.forID("Europe/Sofia")))
-              }</td></tr><tr><td>Last Refresh time</td><td> ${
-                utils.ymdHMs_format.print(Scheduler.refreshTime)
-              }</td></tr><tr><td>Next Refresh time</td><td> ${
-                utils.ymdHMs_format.print(Scheduler.nextRefreshTime)
-              }</td></tr><tr><td>Refresh results</td><td> ${
-                Scheduler.refreshResults.map{
-                  case (station, Success(res)) => s"""<a href="/api/status?station=${station.name}&format=html&details=true">${station.name}</a> => $res"""
-                  case (station, Failure(e)) => station.name + " => " + e
-                }
-              }</td></tr>${
-                if (Scheduler.shutdown) "<tr><td>Shutdown PENDING</td></tr>"
-              }</td/tr><tr><td>${
-                //Scheduler.stations.map(st => s"""<input type="checkbox" name="station" value="${st.name}"> ${st.name}<br>""").mkString
-              }</td></tr></table><table border="1" bordercolor="#000000" width="100%" cellpadding="5" cellspacing="3"><tr><td>STATION</td><td>START</td><td>END</td><td>TITLE</td>${if (detailsFlag) "<td>DETAILS</td>" else ""}<td>STATUS</td></tr>""","","""</table></form></body></html>""")
-            }
-          }.apply(ctx)}
-          else respondWithMediaType(MediaTypes.`text/plain`) { complete { list.mkString("\n") }}
-          }}
-      }}
+      }}}
       // !!!could be buggy !!!
       //path("refresh") { complete { "Refresh completed." + Scheduler.refreshAll} }
   })
