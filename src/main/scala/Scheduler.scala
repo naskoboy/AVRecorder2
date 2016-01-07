@@ -216,7 +216,10 @@ abstract class Station(
   }
 
   def refresh(start: DateTime, end: DateTime, picks: List[(String,Long)]) = Try {
-    val prog = programa.filter(_.start.isAfter(start))
+
+    def coming(a: Article) = a.start.isAfter(start) || a.end.isAfter(start)
+
+    val prog = programa.filter(coming)
     if (!prog.isEmpty) {
       val (pickers, timeslots) = getSubscriptions
       Station.ledger.synchronized {
@@ -226,7 +229,7 @@ abstract class Station(
               (article.start.isBefore(start.minusHours(utils.config.getInt("ledger_retention"))) && status!=Status.Running))
         }.map(_._1)
         toberemoved.foreach(Station.ledger.remove)
-        (prog ++ timeslots).filter(_.start.isAfter(start)).foreach{ article =>
+        (prog ++ timeslots).filter(coming).foreach{ article =>
           if (pickers.exists(article.title.indexOf(_) >= 0) || (picks.exists(it => article.station.name==it._1 && article.start.getMillis==it._2))) {
             if (article.start.isAfter(start) && article.start.isBefore(end)) schedule(article)
             else Station.ledger += article->Status.Picked
