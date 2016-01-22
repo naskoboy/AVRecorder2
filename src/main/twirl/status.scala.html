@@ -51,7 +51,7 @@
                 <td>@item._1.start.toString(utils.ymdHMs_format)</td>
                 <td>@item._1.end.toString(utils.ymdHMs_format)</td>
                 <td>@item._1.title
-                @{if (authInfo.hasPermission("Record") && item._2==Status.Registered) new Html(s"""<input name ="record ${item._1.station.name} ${item._1.start.getMillis}" type="submit" value="Record">""")}
+                @{if (item._1.end.isAfterNow && authInfo.hasPermission("Record") && item._2==Status.Registered) new Html(s"""<input name ="record ${item._1.station.name} ${item._1.start.getMillis}" type="submit" value="Record">""")}
                 </td>
                     @{if (details) new Html(s"<td>${item._1.details.getOrElse("").replace("\n","<br>")}</td>")}
                 <td>@item._2</td>

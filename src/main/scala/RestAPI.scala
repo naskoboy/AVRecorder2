@@ -54,6 +54,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
           }
         }
       } ~
+/*
       path("picked") {
         parameters('station) { stationStr =>
           val start = DateTime.now(DateTimeZone.forID("Europe/Sofia"))
@@ -63,6 +64,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
           }
         }
       } ~
+*/
       path("status") { authenticate(basicUserAuthenticator) { authInfo => { ctx =>
         if (!authInfo.hasPermission("Record")) throw new RuntimeException("Not authorized")
         val query = ctx.request.message.uri.query

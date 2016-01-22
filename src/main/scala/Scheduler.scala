@@ -105,7 +105,7 @@ object utils extends LazyLogging  {
 */
   val rtmpVideoRecorder = (params: Map[String,String]) => (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
-    val fullFileName = article.getFullFilename + ".flv"
+    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details.toString)  + ".flv"
     val fullFileNameTmp = fullFileName + ".tmp"
     import sys.process._
     val cmd = s""""${config.getString("rtmpdump")}" -v --quiet --stop 14400 --timeout 240 -o "$fullFileNameTmp" ${params.map(it => s"${it._1} ${it._2}").mkString(" ")}"""
@@ -183,7 +183,7 @@ abstract class Station(
   recorder: Article => Try[Unit]
 ) {
 
-  def programa: List[Article]
+  def programa: Seq[Article]
 
   def getSubscriptions = {
     val picker_reg = """([^ ]*) (.*)""".r
@@ -199,12 +199,12 @@ abstract class Station(
       case _ => (acc._1, acc._2)
     }}
   }
-
+/*
   def pick(start: DateTime, end: DateTime) = {
     val (pickers, timeslots) = getSubscriptions
-    (programa.filter(article => pickers.exists(article.title.indexOf(_) >= 0)) ++ timeslots).filter(it => it.start.isAfter(start) && it.start.isBefore(end))
+    (programa.filter(article => pickers.exists(it => article.title.indexOf(it) >= 0 || article.details.toString.indexOf(it) >=0)) ++ timeslots).filter(it => it.start.isAfter(start) && it.start.isBefore(end))
   }
-
+*/
   def schedule(article: Article): Unit = {
     utils.scheduler.schedule(new Runnable{ def run() = {
       val res = recorder(article)
@@ -230,7 +230,7 @@ abstract class Station(
         }.map(_._1)
         toberemoved.foreach(Station.ledger.remove)
         (prog ++ timeslots).filter(coming).foreach{ article =>
-          if (pickers.exists(article.title.indexOf(_) >= 0) || (picks.exists(it => article.station.name==it._1 && article.start.getMillis==it._2))) {
+          if (pickers.exists(pk => article.title.indexOf(pk) >= 0 || (pk(0)=='@' && article.details.toString.indexOf(pk.substring(1)) >= 0)) || (picks.exists(it => article.station.name==it._1 && article.start.getMillis==it._2))) {
             if (article.start.isAfter(start) && article.start.isBefore(end)) schedule(article)
             else Station.ledger += article->Status.Picked
           }
@@ -238,6 +238,21 @@ abstract class Station(
         }
       }}
       "OK"
+  }
+
+  def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
+  def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
+  def expandedTime(a1: DateTime, a2: DateTime, b1: DateTime, b2: DateTime) = (if (a1.isBefore(b1)) a1 else b1, if (a2.isAfter(b2)) a2 else b2)
+
+  def enrich(weeklyProgram: Seq[Article], izbrano: Seq[Article]) = {
+    weeklyProgram.map(it =>
+      it.correspondenceArticle(izbrano) match {
+        case Some(izb) =>
+          val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end)
+          Article(this,t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details)
+        case None => it
+      }
+    )
   }
 
 }
@@ -249,10 +264,6 @@ object Scheduler {
   var nextRefreshTime = DateTime.now
   var refreshResults = Seq.empty[(Station, Try[String])]
   var shutdown = false
-
-  def minusWords(a: String, b: String) = { val bb = b.split(" ") ; a.split(" ").filter(it => it.size>3 && !b.exists(_.equals(it))).size }
-  def expandedTitle(a: String, b: String) = { val (r1, r2) = (minusWords(a,b), minusWords(b,a)) ; if (r1<r2) b else a }
-  def expandedTime(a1: DateTime, a2: DateTime, b1: DateTime, b2: DateTime) = (if (a1.isBefore(b1)) a1 else b1, if (a2.isAfter(b2)) a2 else b2)
 
   def bnr_sedmichna_programa(station: Station, doc: Node) = {
 
@@ -294,8 +305,7 @@ object Scheduler {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(this,weeklyDoc)
       val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano(this,"http://bnr.bg" + it \ "@href")).sorted(Ordering[Article])
-      val enrichedWeeklyProgram = weeklyProgram.map(it => it.correspondenceArticle(izbrano) match { case Some(izb) => val (t1,t2) = expandedTime(it.start,it.end,izb.start,izb.end) ; Article(this,t1,t2,it.title,expandedTitle(it.title,izb.title),izb.details) case None => it } )
-      enrichedWeeklyProgram
+      enrich(weeklyProgram, izbrano)
     }
 
     def hb_izbrano(station: Station, url: String) = {
@@ -358,22 +368,26 @@ object Scheduler {
     utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
   ) {
 
+    def bntw_izbrano = Seq[Article]()
+
     def programa = {
       //val daysOfWeek = Seq("ponedelnik", "vtornik", "srqda", "chetvurtuk", "petuk", "subota", "nedelq")
       val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
       val doc = utils.loadXML( """http://bnt.bg/programata""")
       val dayReg = """(.*) (.*) (\d\d\d\d) (.*)""".r
-      (doc \\ "li").filter(it => (it \ "@class").text == "programDays" && (it \ "@id").text.endsWith("_w")).flatMap{ it =>
+      val weeklyProgram = (doc \\ "li").filter(it => (it \ "@class").text == "programDays" && (it \ "@id").text.endsWith("_w")).flatMap{ it =>
         val items = (it\\"div").filter{ it => (it\"@class").text=="programInnerWholeCell"}
         val dayReg(dayStr, monthStr, yearStr,_) = (items.head\\"div").find(it2 => (it2\"@class").text=="programInnerNameInfo").get.text
         val day = new DateTime(yearStr.toInt, utils.months.indexOf(monthStr)+1, dayStr.toInt, 0,0,0,0, DateTimeZone.forID("Europe/Sofia"))
         if (day.isBefore(today)) Nil
         else utils.adjustArticles(items.tail.map{
-          case <div>{_}<div>{timeStr}</div>{_}{titleStr @ _*}</div> =>
-            val (utils.time_hh_mm(h,m), title) = (timeStr.text, titleStr.text.trim)
-            Article(this, day.plusMinutes(h.toInt * 60 + m.toInt), day, title, title, None)
+          //case <div>{_}<div>{timeStr}</div>{_}{titleStr @ _*}</div> =>
+          case <div>{_}<div>{timeStr}</div>{_}<div>{titleNodes @ _*}</div>{_}</div> =>
+            val (utils.time_hh_mm(h,m), title, details) = (timeStr.text, titleNodes.head.text.trim, titleNodes.tail.text.trim)
+            Article(this, day.plusMinutes(h.toInt * 60 + m.toInt), day, title, title, Some(details))
         })
-      }.toList
+      }
+      enrich(weeklyProgram, bntw_izbrano)
     }
   }
 

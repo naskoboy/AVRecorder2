@@ -1,8 +1,10 @@
 import sbt.Keys._
+
 //import AssemblyKeys._ // put this at the top of the file
-assemblySettings
+//assemblySettings
 
 lazy val root = Project("avrecorder2", file(".")).enablePlugins(SbtTwirl)
+//sourceDirectories in (Compile, TwirlKeys.compileTemplates) := (unmanagedSourceDirectories in Compile).value
 
 name := "AVRecorder2"
 version := "1.0"
@@ -36,3 +38,14 @@ libraryDependencies ++= {
 }
 
 //javaOptions += """-Dconfig.file=C:\Users\nasko\IdeaProjects\AVRecorder2\application.conf"""
+
+val deployTask = TaskKey[Unit]("deploy", "Copies assembly jar to remote location")
+// http://blog.bstpierre.org/writing-simple-sbt-task
+// http://blog.byjean.eu/2015/07/10/painless-release-with-sbt.html
+// https://eknet.org/main/dev/sbt-create-distribution-zip.html
+deployTask <<=  assembly map { asm =>
+  val distdir = new File("""R:\target""")
+  val remote = distdir / asm.getName
+  println(s"Copying assembly into $remote")
+  IO.copyFile(asm, remote)
+}
