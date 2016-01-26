@@ -2,6 +2,7 @@ package nasko.avrecorder
 
 import java.io.{PrintWriter, File}
 import java.lang.Throwable
+import java.util.Properties
 import java.util.concurrent.{TimeUnit, Executors}
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.{Logger, LazyLogging}
@@ -128,6 +129,26 @@ object utils extends LazyLogging  {
       else (it.copy(start = it.start.plusDays(1)) :: acc._1, it.start.plusDays(1))
     }._1.reverse
     (list.zip(list.tail)).map{ case (a1,a2) => a1.copy(end = a2.start) }
+  }
+
+  def sendEmail(from: String, to: Seq[String], subject: String, text: String) {
+    import javax.mail.Message
+    import javax.mail.internet.{InternetAddress, MimeMessage}
+
+    // Setup mail server
+    val props = new Properties()
+    props.put("mail.smtp.host", "smtp")
+    val session = javax.mail.Session.getDefaultInstance(props, null)
+
+    // Define message
+    val message = new MimeMessage(session)
+    message.setFrom(new InternetAddress(from))
+    to foreach { r => message.addRecipient(Message.RecipientType.TO, new InternetAddress(r)) }
+    message.setSubject(subject)
+    message.setText(text)
+
+    // Send message
+    javax.mail.Transport.send(message)
   }
 
 }

@@ -1,8 +1,5 @@
 import sbt.Keys._
 
-//import AssemblyKeys._ // put this at the top of the file
-//assemblySettings
-
 lazy val root = Project("avrecorder2", file(".")).enablePlugins(SbtTwirl)
 //sourceDirectories in (Compile, TwirlKeys.compileTemplates) := (unmanagedSourceDirectories in Compile).value
 
@@ -36,8 +33,6 @@ libraryDependencies ++= {
     //"com.mpatric" % "mp3agic" % "0.8.3"
   )
 }
-
-//javaOptions += """-Dconfig.file=C:\Users\nasko\IdeaProjects\AVRecorder2\application.conf"""
 
 val deployTask = TaskKey[Unit]("deploy", "Copies assembly jar to remote location")
 // http://blog.bstpierre.org/writing-simple-sbt-task
