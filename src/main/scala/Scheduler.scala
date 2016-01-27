@@ -106,7 +106,7 @@ object utils extends LazyLogging  {
 */
   val rtmpVideoRecorder = (params: Map[String,String]) => (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
-    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details.toString)  + ".flv"
+    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details match { case Some(d) => d case _ => ""})  + ".flv"
     val fullFileNameTmp = fullFileName + ".tmp"
     import sys.process._
     val cmd = s""""${config.getString("rtmpdump")}" -v --quiet --stop 14400 --timeout 240 -o "$fullFileNameTmp" ${params.map(it => s"${it._1} ${it._2}").mkString(" ")}"""
