@@ -220,12 +220,7 @@ abstract class Station(
       case _ => (acc._1, acc._2)
     }}
   }
-/*
-  def pick(start: DateTime, end: DateTime) = {
-    val (pickers, timeslots) = getSubscriptions
-    (programa.filter(article => pickers.exists(it => article.title.indexOf(it) >= 0 || article.details.toString.indexOf(it) >=0)) ++ timeslots).filter(it => it.start.isAfter(start) && it.start.isBefore(end))
-  }
-*/
+
   def schedule(article: Article): Unit = {
     utils.scheduler.schedule(new Runnable{ def run() = {
       val res = recorder(article)
