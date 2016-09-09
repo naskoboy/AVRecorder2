@@ -4,20 +4,15 @@ import java.io.{PrintWriter, File}
 import java.lang.Throwable
 import java.util.Properties
 import java.util.concurrent.{TimeUnit, Executors}
-import javax.mail.{URLName, Session, PasswordAuthentication}
-import javax.security.auth.callback.CallbackHandler
-import javax.security.sasl.SaslClientFactory
-//import com.sun.mail.smtp.SMTPTransport
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.{Logger, LazyLogging}
 import nasko.avrecorder.api.ApiBoot
 import org.joda.time.format.DateTimeFormat
 import org.joda.time._
 import org.slf4j.LoggerFactory
-import scala.collection.mutable.{ListBuffer, StringBuilder}
+import scala.collection.mutable.StringBuilder
 import scala.concurrent.Future
 import scala.concurrent.ExecutionContext.Implicits.global
-import scala.sys.process.ProcessLogger
 import scala.util.{Failure, Success, Try}
 import scala.xml.Node
 
@@ -72,7 +67,7 @@ object utils extends LazyLogging  {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
     val fullFileName = article.getFullFilename + ".mp3"
     import sys.process._
-    val cmd = s""""${config.getString("vlc")}" ${article.station.url} --sout #transcode{acodec=mpga,ab=128}:std{dst="$fullFileName",access=file} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
+    val cmd = s""""${config.getString("vlc")}" ${article.station.url} --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
     logger.info(cmd)
     val process = cmd.run
     Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
@@ -116,19 +111,10 @@ object utils extends LazyLogging  {
     import sys.process._
     val cmd = s""""${config.getString("rtmpdump")}" -v --quiet --stop 14400 --timeout 240 -o "$fullFileNameTmp" ${params.map(it => s"${it._1} ${it._2}").mkString(" ")}"""
     logger.info(cmd)
-
-    val buffer = ListBuffer[String]()
-    val process = cmd.run(ProcessLogger(buffer append _))
-
+    val process = cmd.run
     // can't capture rtmp-errors
     Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
     process.destroy()
-
-    if (buffer.exists(_.startsWith("ERROR:")))  {
-      Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
-      throw new RuntimeException(s"$cmd\n\n${buffer.mkString("\n")}")
-    }
-
     // http://yamdi.sourceforge.net/
     s""""${config.getString("yamdi")}" -i "$fullFileNameTmp" -o "$fullFileName" -w""".run.exitValue() // wait until completes
     if (!new File(fullFileNameTmp).delete()) logger.warn(s"Failed to delete $fullFileNameTmp")
@@ -150,13 +136,9 @@ object utils extends LazyLogging  {
     import javax.mail.internet.{InternetAddress, MimeMessage}
 
     // Setup mail server
-    import collection.JavaConverters._
     val props = new Properties()
-    utils.config.getConfig("mail.smtp").entrySet().asScala.foreach(it => props.put(s"mail.smtp.${it.getKey}", it.getValue.render()))
-    val authenticator = new javax.mail.Authenticator() {
-      override def getPasswordAuthentication = new PasswordAuthentication(config.getString("smtp.username"), config.getString("smtp.password"))
-    }
-    val session = Session.getInstance(props, authenticator)
+    props.put("mail.smtp.host", "smtp")
+    val session = javax.mail.Session.getDefaultInstance(props, null)
 
     // Define message
     val message = new MimeMessage(session)
@@ -242,9 +224,6 @@ abstract class Station(
   def schedule(article: Article): Unit = {
     utils.scheduler.schedule(new Runnable{ def run() = {
       val res = recorder(article)
-      res match {
-        case Failure(f) => utils.sendEmail("naskoboy@gmail.com", Seq("naskohm@gmail.com"), "AVRecorder error", article + "\n" + f.getMessage)
-      }
       if (Scheduler.shutdown && !Station.ledger.values.exists(_ == Status.Running)) System.exit(0)
       res
     }}, article.start.getMillis - System.currentTimeMillis - article.station.leftPadding*60*1000L, TimeUnit.MILLISECONDS)
@@ -398,11 +377,11 @@ object Scheduler {
   object BntWorld extends Station(
     config.getString("stations.BntWorld.name"),
     config.getString("stations.BntWorld.prefix"),
-    "URL???",
+    config.getString("stations.BntWorld.url"),
     config.getString("stations.BntWorld.destination"),
     config.getInt("stations.BntWorld.leftPadding"),
     config.getInt("stations.BntWorld.rightPadding"),
-    utils.rtmpVideoRecorder(Map("-r" -> config.getString("stations.BntWorld.url")))
+    utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
   ) {
 
     def bntw_izbrano = Seq[Article]()
