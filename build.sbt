@@ -5,7 +5,7 @@ lazy val root = Project("avrecorder2", file(".")).enablePlugins(SbtTwirl)
 
 name := "AVRecorder2"
 version := "1.0"
-scalaVersion := "2.11.7"
+scalaVersion := "2.11.8"
 
 libraryDependencies ++= {
   val sprayVersion = "1.3.3"
@@ -13,8 +13,12 @@ libraryDependencies ++= {
   Seq(
     "org.scala-lang" % "scala-compiler" % scalaVersion.value,
     "joda-time" % "joda-time" % "2.6",
-    "javax.mail" % "mail" % "1.4.7",
-    "com.typesafe" % "config" % "1.3.0",
+    "javax.mail" % "javax.mail-api" % "1.5.5",
+    //"javax.activation" % "activation" % "1.1.1",
+    //"javax.mail" % "mail" % "1.4.7",
+    //"javax.mail" % "javax.mail" % "1.5.5",
+    "com.sun.mail" % "javax.mail" % "1.5.5",
+  "com.typesafe" % "config" % "1.3.0",
     "org.ccil.cowan.tagsoup" % "tagsoup" % "1.2.1",
     "org" % "jaudiotagger" % "2.0.3",
     //"log4j" % "log4j" % "1.2.14",
@@ -25,7 +29,8 @@ libraryDependencies ++= {
     "io.spray" % "spray-routing_2.11" % sprayVersion,
     "io.spray" % "spray-testkit_2.11" % sprayVersion,
     "io.spray" % "spray-client_2.11" % sprayVersion,
-    "com.github.t3hnar" % "scala-bcrypt_2.11" % "2.5"
+    "com.github.t3hnar" % "scala-bcrypt_2.11" % "2.5",
+    "com.google.api-client" % "google-api-client" % "1.21.0"
 
     //"org.scala-lang.modules" % "scala-xml_2.11" % "1.0.3"
     //"org.scalatest" % "scalatest_2.11" % "2.2.1" % "test",

@@ -351,12 +351,14 @@ object Scheduler {
       val locations = cont_flat.foldLeft((List.empty[Int],0))((acc,it) => it match { case <b>{_}{some @ _*}</b> => (acc._2-1 :: acc._1, acc._2+1) case _ => (acc._1, acc._2+1) })._1.reverse.drop(1)
       val location_splits = locations.zip(locations.drop(1) ++ List(cont_flat.size))
       val items = location_splits.map(it => cont_flat.drop(it._1).take(it._2-it._1))
-      items.map{ case date :: title :: details =>
-        val (t1, t2) = date.text match {
-          case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
-          case _ => (0,0)
-        }
-        Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n")))
+      items.flatMap{
+        case date :: title :: details =>
+          val (t1, t2) = date.text match {
+            case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
+            case _ => (0,0)
+          }
+          List(Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n"))))
+        case _ => List()
       }
     }
 
