@@ -20,7 +20,58 @@ import scala.xml.Node
  * Created by nasko on 11/20/2015.
  */
 
+case class Reader[C, A](g: C => A) {
+  def apply(c: C) = g(c)
+  def map[B](f: A => B): Reader[C, B] = flatMap(a => Reader(c => f(a)) )  // Reader(c => f(g(c)))
+  def flatMap[B](f: A => Reader[C, B]): Reader[C, B] = Reader(c => f(g(c))(c))
+}
+
 object utils extends LazyLogging  {
+
+  def rtmpAudio(url: String) = Reader((article: Article) => {
+    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details match { case Some(d) => d case _ => ""})  + ".flv"
+    val cmd = s"""${utils.config.getString("rtmpdump")} -r $url -o $fullFileName"""
+    import sys.process._
+    val process = cmd.run
+    // can't capture rtmp-errors
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
+    process.destroy()
+    fullFileName
+  })
+
+  def vlcAudioConvert(filename: String) = {
+    val newFileName = filename.replace(".flv", ".mp3")
+    val cmd = s"""${utils.config.getString("vlc")} "$filename" --sout=#transcode{acodec=mp3,vcodec=dummy}:standard{access=file,mux=raw,dst="$newFileName"} -I dummy vlc://quit"""
+    import sys.process._
+    val process = cmd.run
+    // can't capture rtmp-errors
+    process.exitValue()
+    newFileName
+  }
+
+  def fixMp3Tags(article: Article, filename: String) = {
+    // fix mp3 tag, https://github.com/soc/jaudiotagger
+    import org.jaudiotagger.audio.AudioFileIO
+    import org.jaudiotagger.tag.{FieldKey, TagOptionSingleton}
+    import org.jaudiotagger.tag.id3.valuepair.TextEncoding
+    TagOptionSingleton.getInstance.setId3v23DefaultTextEncoding(TextEncoding.getInstanceOf.getIdForValue("UTF-8").byteValue())
+
+    val tag = new org.jaudiotagger.tag.id3.ID3v23Tag()
+    tag.addField(FieldKey.ALBUM, article.minimalTitle)
+    article.details match {
+      case Some(details) =>
+        if (details.size<=50) { tag.addField(FieldKey.TITLE, details) }
+        else {
+          tag.addField(FieldKey.TITLE, article.title)
+          tag.addField(FieldKey.COMMENT, details)
+        }
+      case None =>
+        tag.addField(FieldKey.TITLE, article.title)
+    }
+    val file = AudioFileIO.read(new File(filename))
+    file.setTag(tag)
+    file.commit
+  }
 
   override lazy val logger = Logger(LoggerFactory.getLogger(""))
   val scheduler = Executors.newScheduledThreadPool(5)
@@ -204,6 +255,8 @@ abstract class Station(
   recorder: Article => Try[Unit]
 ) {
 
+  val factory: Reader[Article,Unit] = Reader(a => a)
+
   def programa: Seq[Article]
 
   def getSubscriptions = {
@@ -223,7 +276,8 @@ abstract class Station(
 
   def schedule(article: Article): Unit = {
     utils.scheduler.schedule(new Runnable{ def run() = {
-      val res = recorder(article)
+      //val res = recorder(article)
+      val res = article.station.factory.apply(article)
       if (Scheduler.shutdown && !Station.ledger.values.exists(_ == Status.Running)) System.exit(0)
       res
     }}, article.start.getMillis - System.currentTimeMillis - article.station.leftPadding*60*1000L, TimeUnit.MILLISECONDS)
@@ -317,6 +371,8 @@ object Scheduler {
       config.getInt("stations.HristoBotev.rightPadding"),
       utils.audioRecorder
   ) {
+    override val factory = utils.rtmpAudio(config.getString("stations.HristoBotev.url")).map(utils.vlcAudioConvert).flatMap(fn => Reader(art => utils.fixMp3Tags(art,fn) ) )
+
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(this,weeklyDoc)
@@ -374,6 +430,9 @@ object Scheduler {
     utils.audioRecorder
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
+
+    override val factory = utils.rtmpAudio(config.getString("stations.Horizont.url")).map(utils.vlcAudioConvert).flatMap(fn => Reader(art => utils.fixMp3Tags(art,fn) ) )
+
   }
 
   object BntWorld extends Station(
