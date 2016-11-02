@@ -29,7 +29,7 @@ case class Reader[C, A](g: C => A) {
 object utils extends LazyLogging  {
 
   def rtmpAudio(url: String) = Reader((article: Article) => {
-    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details match { case Some(d) => d case _ => ""})  + ".flv"
+    val fullFileName = article.getFullFilename + ".flv"
     val cmd = s"""${utils.config.getString("rtmpdump")} -r $url -o $fullFileName"""
     import sys.process._
     val process = cmd.run
@@ -49,7 +49,7 @@ object utils extends LazyLogging  {
     newFileName
   }
 
-  def fixMp3Tags(article: Article, filename: String) = {
+  def fixMp3Tags(filename: String)(article: Article) = {
     // fix mp3 tag, https://github.com/soc/jaudiotagger
     import org.jaudiotagger.audio.AudioFileIO
     import org.jaudiotagger.tag.{FieldKey, TagOptionSingleton}
@@ -71,7 +71,18 @@ object utils extends LazyLogging  {
     val file = AudioFileIO.read(new File(filename))
     file.setTag(tag)
     file.commit
+    filename
   }
+
+  def bnrFactory(url: String): Reader[Article,String] =
+    for (
+      _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Running }};
+      flv <- utils.rtmpAudio(url);
+      mp3 <- Reader{ _:Article => utils.vlcAudioConvert(flv)};
+      fixedMp3 <- Reader{ _:Article => utils.fixMp3Tags(mp3) _ ; new java.io.File(flv).delete() };
+      _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Completed }}
+    ) yield mp3
+
 
   override lazy val logger = Logger(LoggerFactory.getLogger(""))
   val scheduler = Executors.newScheduledThreadPool(5)
@@ -255,7 +266,7 @@ abstract class Station(
   recorder: Article => Try[Unit]
 ) {
 
-  val factory: Reader[Article,Unit] = Reader(a => a)
+  val factory: Reader[Article,String] = Reader(a => "")
 
   def programa: Seq[Article]
 
@@ -371,7 +382,8 @@ object Scheduler {
       config.getInt("stations.HristoBotev.rightPadding"),
       utils.audioRecorder
   ) {
-    override val factory = utils.rtmpAudio(config.getString("stations.HristoBotev.url")).map(utils.vlcAudioConvert).flatMap(fn => Reader(art => utils.fixMp3Tags(art,fn) ) )
+
+    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.HristoBotev.url"))
 
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
@@ -431,7 +443,7 @@ object Scheduler {
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
 
-    override val factory = utils.rtmpAudio(config.getString("stations.Horizont.url")).map(utils.vlcAudioConvert).flatMap(fn => Reader(art => utils.fixMp3Tags(art,fn) ) )
+    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.Horizont.url"))
 
   }
 
