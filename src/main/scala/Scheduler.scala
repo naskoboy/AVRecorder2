@@ -28,28 +28,46 @@ case class Reader[C, A](g: C => A) {
 
 object utils extends LazyLogging  {
 
-  def rtmpAudio(url: String) = Reader((article: Article) => {
+  def rtmpAudio(url: String)(article: Article) = {
     val fullFileName = article.getFullFilename + ".flv"
     val cmd = s"""${utils.config.getString("rtmpdump")} -r $url -o $fullFileName"""
+    logger.info(cmd)
     import sys.process._
     val process = cmd.run
     // can't capture rtmp-errors
     Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
     process.destroy()
+    logger.info(s"$fullFileName COMPLETED")
     fullFileName
-  })
+  }
 
-  def vlcAudioConvert(filename: String) = {
+  // doesn't work !!!
+  def vlcBnrAudio(url: String)(article: Article) = {
+    val fullFileName = article.getFullFilename + ".mp3"
+    import sys.process._
+    val cmd = s""""${config.getString("vlc")}" $url --sout #duplicate{dst=std{access=file,mux=raw,dst="$fullFileName"}} --run-time=7200 -I dummy --dummy-quiet vlc://quit"""
+    logger.info(cmd)
+    val process = cmd.run
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
+    process.destroy()
+    logger.info(s"$fullFileName COMPLETED")
+    fullFileName
+  }
+
+  def vlcFlvToMp3Convert(filename: String) = {
     val newFileName = filename.replace(".flv", ".mp3")
     val cmd = s"""${utils.config.getString("vlc")} "$filename" --sout=#transcode{acodec=mp3,vcodec=dummy}:standard{access=file,mux=raw,dst="$newFileName"} -I dummy vlc://quit"""
+    logger.info(cmd)
     import sys.process._
     val process = cmd.run
     // can't capture rtmp-errors
     process.exitValue()
+    logger.info(s"$newFileName COMPLETED")
     newFileName
   }
 
   def fixMp3Tags(filename: String)(article: Article) = {
+    logger.info(s"$filename fixing mp3 tags ...")
     // fix mp3 tag, https://github.com/soc/jaudiotagger
     import org.jaudiotagger.audio.AudioFileIO
     import org.jaudiotagger.tag.{FieldKey, TagOptionSingleton}
@@ -71,17 +89,48 @@ object utils extends LazyLogging  {
     val file = AudioFileIO.read(new File(filename))
     file.setTag(tag)
     file.commit
+    logger.info(s"$filename mp3 tags Fixed")
     filename
   }
 
   def bnrFactory(url: String): Reader[Article,String] =
     for (
       _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Running }};
-      flv <- utils.rtmpAudio(url);
-      mp3 <- Reader{ _:Article => utils.vlcAudioConvert(flv)};
+      flv <- Reader(utils.rtmpAudio(url));
+      mp3 <- Reader{ _:Article => utils.vlcFlvToMp3Convert(flv)};
       fixedMp3 <- Reader{ _:Article => utils.fixMp3Tags(mp3) _ ; new java.io.File(flv).delete() };
       _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Completed }}
     ) yield mp3
+
+
+  def rtmpVideo(params: Map[String,String])(article: Article) = {
+    Station.ledger.synchronized{ Station.ledger += article->Status.Running }
+    val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details match { case Some(d) => d case _ => ""})  + ".flv"
+    val fullFileNameTmp = fullFileName + ".tmp"
+    import sys.process._
+    val cmd = s""""${config.getString("rtmpdump")}" -v --quiet --stop 14400 --timeout 240 -o "$fullFileNameTmp" ${params.map(it => s"${it._1} ${it._2}").mkString(" ")}"""
+    logger.info(cmd)
+    val process = cmd.run
+    // can't capture rtmp-errors
+    Thread.sleep(1000*(Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60))
+    process.destroy()
+    // http://yamdi.sourceforge.net/
+    s""""${config.getString("yamdi")}" -i "$fullFileNameTmp" -o "$fullFileName" -w""".run.exitValue() // wait until completes
+    if (!new File(fullFileNameTmp).delete()) logger.warn(s"Failed to delete $fullFileNameTmp")
+    logger.info(s"$fullFileName COMPLETED")
+    Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
+    fullFileName
+  }
+/*
+  def rtmpVideoFactory(url: String): Reader[Article,String] =
+    for (
+      _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Running }};
+      flv <- Reader(utils.rtmpVideo(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat")));
+      //mp3 <- Reader{ _:Article => utils.vlcFlvToMp3Convert(flv)};
+      //fixedMp3 <- Reader{ _:Article => utils.fixMp3Tags(mp3) _ ; new java.io.File(flv).delete() };
+      _ <- Reader{ art:Article => Station.ledger.synchronized{ Station.ledger += art->Status.Completed }}
+    ) yield flv
+*/
 
 
   override lazy val logger = Logger(LoggerFactory.getLogger(""))
@@ -124,7 +173,7 @@ object utils extends LazyLogging  {
     val source = new org.xml.sax.InputSource(url)
     adapter.loadXML(source, parser)
   }
-
+/*
   val audioRecorder = (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
     val fullFileName = article.getFullFilename + ".mp3"
@@ -160,12 +209,13 @@ object utils extends LazyLogging  {
     Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
   }
+*/
 /*
   def executeCommand(cmd: String, mystdout: StringBuilder, mystderr: StringBuilder) = {
     import sys.process._
     Process(cmd) ! ProcessLogger(it => { mystdout append (it+"\n") }, it => { mystderr append (it+"\n")})
   }
-*/
+
   val rtmpVideoRecorder = (params: Map[String,String]) => (article: Article) => Try {
     Station.ledger.synchronized{ Station.ledger += article->Status.Running }
     val fullFileName = article.getFullFilename + "_" + utils.getFixedString(article.details match { case Some(d) => d case _ => ""})  + ".flv"
@@ -184,7 +234,7 @@ object utils extends LazyLogging  {
     Station.ledger.synchronized{ Station.ledger += article->Status.Completed}
     ()
   }
-
+*/
   def adjustArticles(articles: Seq[Article]) = {
     val list = articles.foldLeft((List.empty[Article], DateTime.now.minusYears(1))){ (acc, it) =>
       if (it.start.isAfter(acc._2)) (it :: acc._1, it.start)
@@ -262,8 +312,7 @@ abstract class Station(
   val url: String,
   val destination: String,
   val leftPadding: Int,
-  val rightPadding: Int,
-  recorder: Article => Try[Unit]
+  val rightPadding: Int
 ) {
 
   val factory: Reader[Article,String] = Reader(a => "")
@@ -379,20 +428,19 @@ object Scheduler {
       config.getString("stations.HristoBotev.url"),
       config.getString("stations.HristoBotev.destination"),
       config.getInt("stations.HristoBotev.leftPadding"),
-      config.getInt("stations.HristoBotev.rightPadding"),
-      utils.audioRecorder
+      config.getInt("stations.HristoBotev.rightPadding")
   ) {
 
-    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.HristoBotev.url"))
+    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.HristoBotev.rtmp_url"))
 
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
-      val weeklyProgram = bnr_sedmichna_programa(this,weeklyDoc)
-      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano(this,"http://bnr.bg" + it \ "@href")).sorted(Ordering[Article])
+      val weeklyProgram = bnr_sedmichna_programa(this, weeklyDoc)
+      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano("http://bnr.bg" + it \ "@href")).sorted(Ordering[Article])
       enrich(weeklyProgram, izbrano)
     }
 
-    def hb_izbrano(station: Station, url: String) = {
+    def hb_izbrano(url: String) = {
 
       def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
         case <br/> => Nil
@@ -421,11 +469,11 @@ object Scheduler {
       val items = location_splits.map(it => cont_flat.drop(it._1).take(it._2-it._1))
       items.flatMap{
         case date :: title :: details =>
-          val (t1, t2) = date.text match {
+          val (t1, t2) = date.text.trim match {
             case utils.time_reg(h1,m1,h2,m2) => (h1.toInt*60+m1.toInt, h2.toInt*60+m2.toInt)
-            case _ => (0,0)
+            case _ =>  (0,0)
           }
-          List(Article(station,datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n"))))
+          List(Article(this, datetime.plusMinutes(t1), datetime.plusMinutes(t2), title.text, title.text, Some(details.map(_.text).mkString("\n"))))
         case _ => List()
       }
     }
@@ -438,12 +486,11 @@ object Scheduler {
     config.getString("stations.Horizont.url"),
     config.getString("stations.Horizont.destination"),
     config.getInt("stations.Horizont.leftPadding"),
-    config.getInt("stations.Horizont.rightPadding"),
-    utils.audioRecorder
+    config.getInt("stations.Horizont.rightPadding")
   ) {
     def programa = bnr_sedmichna_programa(this, utils.loadXML("""http://bnr.bg/horizont/page/programna-shema"""))
 
-    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.Horizont.url"))
+    override val factory: Reader[Article,String] = utils.bnrFactory(config.getString("stations.Horizont.rtmp_url"))
 
   }
 
@@ -453,9 +500,11 @@ object Scheduler {
     config.getString("stations.BntWorld.url"),
     config.getString("stations.BntWorld.destination"),
     config.getInt("stations.BntWorld.leftPadding"),
-    config.getInt("stations.BntWorld.rightPadding"),
-    utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
+    config.getInt("stations.BntWorld.rightPadding")
+//    utils.rtmpVideoRecorder(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat"))
   ) {
+
+    override val factory: Reader[Article,String] = Reader(utils.rtmpVideo(Map("-r" -> "rtmp://193.43.26.198:1935/live/bntsat")))
 
     def bntw_izbrano = Seq[Article]()
 
@@ -486,8 +535,10 @@ object Scheduler {
     "stations.NovaTV.url",
     config.getString("stations.NovaTV.destination"),
     config.getInt("stations.NovaTV.leftPadding"),
-    config.getInt("stations.NovaTV.rightPadding"),
-    utils.rtmpVideoRecorder(Map(
+    config.getInt("stations.NovaTV.rightPadding")
+  ) {
+
+    override val factory: Reader[Article,String] = Reader(utils.rtmpVideo(Map(
       "-r" -> "rtmp://e1.cdn.bg:2060/fls",
       "-a" -> "fls",
       "-f" -> "WIN 11,7,700,224",
@@ -496,8 +547,8 @@ object Scheduler {
       "-y" -> "ntv_1.stream",
       "-T" -> "N0v4TV6#2",
       "-S" -> "192.168.1.10:1080"
-    ))
-  ) {
+    )))
+
     def programa = {
       val today = DateTime.now(DateTimeZone.forID("Europe/Sofia")).withMillisOfDay(0)
       utils.adjustArticles(0.to(6).flatMap{step =>
