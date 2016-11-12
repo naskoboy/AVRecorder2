@@ -120,7 +120,7 @@ object utils extends LazyLogging  {
   override lazy val logger = Logger(LoggerFactory.getLogger(""))
   val scheduler = Executors.newScheduledThreadPool(5)
   val time_reg = ".т (\\d{1,2}).(\\d\\d) д. (\\d{1,2}).(\\d\\d) часа".r
-  val day_reg = "(.*), (\\d{1,2}) (.*)".r
+  val day_reg = """(.*),(?: *)(\d{1,2}) (.*)""".r
   val day_reg_long = """(\d{1,2}) (.*) (\d\d\d\d), (.*)""".r
   val time_hh_mm = """(\d\d):(\d\d)""".r
   val timeslot_reg = """(\d\d):(\d\d) (\d\d):(\d\d) (.*)""".r
@@ -268,6 +268,7 @@ abstract class Station(
 
   def getSubscriptions = {
     val picker_reg = """([^ ]*) (.*)""".r
+    // """([^ ]*) ([^,]*)(.*)$?"""
     val timeslot_reg = """(.*) TimeSlot (\d) (\d\d):(\d\d) (\d\d):(\d\d) (.*)""".r
     val subscriptions = scala.io.Source.fromFile(utils.config.getString("subscriptions")).getLines().toList.filter(it => it != "" && it(0)!="#")
     subscriptions.foldLeft(List.empty[String], List.empty[Article]){ (acc,it) => it match {
@@ -283,7 +284,6 @@ abstract class Station(
 
   def schedule(article: Article): Unit = {
     utils.scheduler.schedule(new Runnable{ def run() = {
-      //val res = recorder(article)
       val res = article.station.factory.apply(article)
       if (Scheduler.shutdown && !Station.ledger.values.exists(_ == Status.Running)) System.exit(0)
       res
