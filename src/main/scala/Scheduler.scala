@@ -26,6 +26,28 @@ case class Reader[C, A](g: C => A) {
   def flatMap[B](f: A => Reader[C, B]): Reader[C, B] = Reader(c => f(g(c))(c))
 }
 
+object eskalatorGenerator extends App {
+  val url = "http://bnr.bg" + ((utils.loadXML("""http://bnr.bg/horizont/search?q=%D0%B5%D1%81%D0%BA%D0%B0%D0%BB%D0%B0%D1%82%D0%BE%D1%80""") \\ "a").find { it => (it \ "@href").text.startsWith("""/horizont/post""")}.get \ "@href").text
+  val items = utils.loadXML(url) \\ "div" filter { it => (it \ "@class").text == "row-fluid entryRow"}
+  val items2 = items map {
+    case <div>{_}<div>{s1 @ _*}</div>{_}<div>{_}<div>{_}<div>{img @ _*}</div>{_}</div>{_}<div>{_}<div>{_}{play @ _}<h5>{song}</h5>{_}<small>{artist}</small>{_}</div>{_}</div>{_}</div>{_}<div>{_*}</div>{_}</div> =>
+      ( song text,
+        artist text,
+        (utils.loadXML("http://bnr.bg" + (play \ "@href" text)) \\ "input").find(it => (it \ "@value").text.startsWith("http")).map(_ \ "@value" text),
+        img \ "@src" text
+        )
+    //case _ => "NO"
+  }
+  val html = s"""<html><form><h2>Ескалатор Михалеви<a href="$url">БНР</a></h2><table  border="0" bordercolor="#000000">${
+    items2 map { case (song, artist, link, pic) =>
+      val linkStr = link.getOrElse("")
+      s"""<tr><td><h2><a href="$linkStr">$song</a>$artist</h2></td></tr><tr><td><img src="$pic" width="700" height="350" /></td></tr>"""  } mkString
+  }</table></form></html>"""
+  val filename = utils.config.getString("home") + """\eskalator.html"""
+  scala.tools.nsc.io.File(filename).writeAll(html)
+  utils.logger.info(s"$filename generated.")
+}
+
 object utils extends LazyLogging  {
 
   def flvAudioViaRtmp(url: String)(article: Article) = {
@@ -45,7 +67,7 @@ object utils extends LazyLogging  {
     val fullFileName = article.getFullFilename + ".mp3"
     val duration = Seconds.secondsBetween(DateTime.now, article.end).getSeconds+article.station.rightPadding*60
     val rtmp = s""""${utils.config.getString("rtmpdump")}" -r $url"""
-    val vlc = s""""${config.getString("vlc")}" - --sout #transcode{acodec=mp3,vcodec=dummy,ab=128,channels=2}:std{dst="$fullFileName",access=file} --run-time=$duration -I dummy --dummy-quiet vlc://quit"""
+    val vlc = s""""${config.getString("vlc")}" - --sout #transcode{acodec=mp3,vcodec=dummy,ab=128,channels=2,samplerate=44100}:std{dst="$fullFileName",access=file} --run-time=$duration -I dummy --dummy-quiet vlc://quit"""
     logger.info(rtmp + " | " + vlc)
     import sys.process._
     val sb = new StringBuilder

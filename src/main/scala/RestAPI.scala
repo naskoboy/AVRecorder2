@@ -106,21 +106,7 @@ class ApiActor extends Actor with HttpService with Authenticator {
       path("eskalator") {
         respondWithMediaType(MediaTypes.`text/html`) {
           complete {
-            val url = "http://bnr.bg" + ((utils.loadXML("""http://bnr.bg/horizont/search?q=%D0%B5%D1%81%D0%BA%D0%B0%D0%BB%D0%B0%D1%82%D0%BE%D1%80""") \\ "a").find { it => (it \ "@href").text.startsWith("""/horizont/post""")}.get \ "@href").text
-            s"""<html><h2><form>Ескалатор Михалеви</h2><BR/><a href="$url">БНР</a><table  border="1" bordercolor="#000000"><tr><td>ПЕСЕН</td><td>ИЗПЪЛНИТЕЛ</td><td></td></tr>${
-              val items = utils.loadXML(url) \\ "div" filter { it => (it \ "@class").text == "row-fluid entryRow"}
-              items map {
-                case <div>{_}<div>{s1 @ _*}</div>{_}<div>{_}<div>{_}<div>{img @ _*}</div>{_}</div>{_}<div>{_}<div>{_}{play @ _}<h5>{song}</h5>{_}<small>{artist}</small>{_}</div>{_}</div>{_}</div>{_}<div>{_*}</div>{_}</div> =>
-                  ( song text,
-                    artist text,
-                    (utils.loadXML("http://bnr.bg" + (play \ "@href" text)) \\ "input").find(it => (it \ "@value").text.startsWith("http")).map(_ \ "@value" text),
-                    img \ "@src" text
-                    )
-                //case _ => "NO"
-              } map { case (song, artist, link, pic) =>
-                val linkStr = link.getOrElse("")
-                s"""<tr><td><a href="$linkStr">$song</a></td><td>$artist</td><td><img src="$pic"/></td></tr>"""  } mkString
-            }</table></form></html>"""
+            scala.io.Source.fromFile(utils.config.getString("home") + """\eskalator.html""").mkString
           }
         }} ~
       path("shutdown") { authenticate(basicUserAuthenticator) { authInfo => complete {
