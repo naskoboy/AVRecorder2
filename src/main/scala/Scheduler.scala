@@ -383,11 +383,11 @@ object Scheduler {
     def programa = {
       val weeklyDoc = utils.loadXML("""http://bnr.bg/hristobotev/page/sedmichna-programa""")
       val weeklyProgram = bnr_sedmichna_programa(this, weeklyDoc)
-      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano("http://bnr.bg" + it \ "@href")).sorted(Ordering[Article])
+      val izbrano = ((weeklyDoc \\ "div").find(it => (it \ "@class").text == "row-fluid module_container").get \\ "a").flatMap(it => hb_izbrano("http://bnr.bg" + it \ "@href") match { case Success(l) => l case _ => Nil }).sorted(Ordering[Article])
       enrich(weeklyProgram, izbrano)
     }
 
-    def hb_izbrano(url: String) = {
+    def hb_izbrano(url: String) = Try {
 
       def strip(node:Seq[Node]): Seq[Node] = node.flatMap{
         case <br/> => Nil
